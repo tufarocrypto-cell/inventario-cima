@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1b2a41">
+<title>Inventario CIMA</title>
+<link rel="manifest" href="manifest.webmanifest">
+<style>
+:root { --blu: #1b2a41; --rosso: #c0392b; --verde: #27ae60; --giallo: #f1c40f; --grigio: #f2f4f7; --testo: #1e1e1e; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; font-family: system-ui, -apple-system, Roboto, sans-serif; color: var(--testo); background: #fff; font-size: 17px; }
+button, input, select, textarea { font: inherit; }
+button { border: 0; border-radius: 10px; padding: 14px 16px; background: var(--blu); color: #fff; font-weight: 600; }
+button.secondario { background: #e6e9ef; color: var(--testo); }
+button.pericolo { background: var(--rosso); }
+button:disabled { opacity: .5; }
+input, select, textarea { width: 100%; padding: 12px; border: 1px solid #c8ced8; border-radius: 10px; background: #fff; }
+label { display: block; font-size: .85rem; color: #555; margin: 12px 0 4px; }
+section[data-schermata] { display: none; min-height: 100%; padding-bottom: 80px; }
+section[data-schermata].attiva { display: block; }
+header.barra { position: sticky; top: 0; z-index: 5; background: var(--blu); color: #fff; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; }
+header.barra .pos { font-size: 1.3rem; font-weight: 700; }
+nav.tab { position: fixed; bottom: 0; left: 0; right: 0; display: flex; background: #fff; border-top: 1px solid #ddd; z-index: 5; }
+nav.tab button { flex: 1; border-radius: 0; background: #fff; color: #555; padding: 12px 0; font-size: .85rem; }
+nav.tab button.attivo { color: var(--blu); border-top: 3px solid var(--blu); }
+.contenuto { padding: 14px; }
+.riga { display: flex; gap: 10px; align-items: end; }
+.riga > * { flex: 1; }
+.qta { display: grid; grid-template-columns: 1fr 1fr 2fr 1fr; gap: 8px; align-items: center; }
+.qta input { text-align: center; font-size: 1.6rem; font-weight: 700; }
+.miniature { display: flex; gap: 8px; overflow-x: auto; padding: 6px 0; }
+.miniature img { width: 84px; height: 84px; object-fit: cover; border-radius: 8px; border: 1px solid #ccc; }
+.avviso { padding: 10px 14px; margin: 10px 14px; border-radius: 10px; font-weight: 600; }
+.avviso.rosso { background: #fdecea; color: var(--rosso); }
+.avviso.giallo { background: #fef9e1; color: #7a5b00; }
+.avviso.verde { background: #e9f7ef; color: #1d7a45; }
+ul.lista { list-style: none; margin: 0; padding: 0; }
+ul.lista li { padding: 12px 14px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; gap: 10px; }
+ul.lista li small { color: #666; display: block; }
+.componente { border: 1px dashed #bbb; border-radius: 10px; padding: 10px; margin-top: 8px; }
+.suggerimenti button { display: block; width: 100%; text-align: left; margin-top: 4px; }
+.azioni { position: fixed; bottom: 56px; left: 0; right: 0; padding: 10px 14px; background: #fff; border-top: 1px solid #ddd; display: flex; gap: 10px; z-index: 4; }
+.azioni button { flex: 1; }
+#video { width: 100%; max-height: 55vh; background: #000; border-radius: 10px; object-fit: cover; }
+.nascosto { display: none !important; }
+dialog { border: 0; border-radius: 12px; padding: 18px; max-width: 92vw; }
+dialog button { margin-top: 10px; width: 100%; }
+</style>
+</head>
+<body>
+
+<section data-schermata="scansione" class="attiva">
+  <header class="barra"><div><small>Posizione corrente</small><div class="pos" id="posCorrente">nessuna</div></div><div><small>Oggi</small><div class="pos" id="contaOggi">0</div></div></header>
+  <div id="avvisoExport" class="avviso rosso nascosto">Sono passate piu' di 24 ore dall'ultima esportazione confermata e ci sono dati nuovi. Esporta appena puoi.</div>
+  <div id="avvisoPersist" class="avviso giallo nascosto">Memoria non protetta: esporta ogni sera.</div>
+  <div class="contenuto">
+    <div id="areaVideo">
+      <video id="video" autoplay muted playsinline></video>
+      <div class="riga" style="margin-top:8px"><button id="btnTorcia" class="secondario">Torcia</button><span id="statoScanner" style="flex:2;font-size:.9rem;color:#555;align-self:center"></span></div>
+      <div id="permessoNegato" class="avviso rosso nascosto">Fotocamera non autorizzata. In Chrome: icona del lucchetto accanto all'indirizzo, Autorizzazioni, Fotocamera: Consenti, poi ricarica.</div>
+    </div>
+    <label>Codice a mano (o QR scaffale)</label>
+    <div class="riga"><input id="codiceManuale" inputmode="text" autocomplete="off" placeholder="es. 4006381333931 oppure SCAFFALE:B3"><button id="btnCodiceManuale" style="flex:0 0 auto">Vai</button></div>
+    <div class="riga" style="margin-top:12px"><button id="btnSenzaCodice" class="secondario">Articolo senza codice</button><button id="btnCambiaScaffale" class="secondario">Cambia scaffale</button></div>
+  </div>
+</section>
+
+<section data-schermata="scheda">
+  <header class="barra"><div class="pos" id="titoloScheda">Articolo</div><button id="btnChiudiScheda" class="secondario" style="padding:8px 12px">Annulla</button></header>
+  <div class="contenuto" id="formScheda">
+    <label>Codice <span id="tipoCodiceEtichetta"></span></label>
+    <input id="fCodice" readonly>
+    <label>Quantita'</label>
+    <div class="qta"><button class="secondario" data-delta="-1">-1</button><button class="secondario" data-delta="1">+1</button><input id="fQuantita" type="number" inputmode="decimal" min="0" step="any"><button class="secondario" data-delta="10">+10</button></div>
+    <label>Unita'</label><select id="fUnita"></select>
+    <label>Descrizione</label>
+    <input id="fDescrizione" autocomplete="off" autocapitalize="sentences">
+    <div class="suggerimenti" id="suggerimenti"></div>
+    <label>Foto</label>
+    <div class="miniature" id="miniature"></div>
+    <button id="btnScatta" class="secondario">Scatta foto</button>
+    <input id="fileFoto" type="file" accept="image/*" capture="environment" class="nascosto">
+    <label>Marca</label><input id="fMarca" autocomplete="off">
+    <label>Categoria</label>
+    <div class="riga"><select id="fCategoria"></select><button id="btnNuovaCategoria" class="secondario" style="flex:0 0 auto">+</button></div>
+    <label>Prezzo esposto (EUR)</label><input id="fPrezzo" type="number" inputmode="decimal" min="0" step="0.01" placeholder="vuoto se non c'e' l'etichetta">
+    <label>Stato</label><select id="fStato"></select>
+    <label>Tipo</label><select id="fTipo"><option value="semplice">Articolo semplice</option><option value="kit">Kit / articolo composto</option><option value="componente">Componente sciolto</option></select>
+    <div id="blocComponenti" class="nascosto"><label>Componenti del kit</label><div id="componenti"></div><button id="btnAggiungiComponente" class="secondario" style="margin-top:8px">Aggiungi componente</button></div>
+    <div id="blocAppartiene" class="nascosto"><label>Appartiene al kit</label><select id="fAppartiene"><option value="">(non so)</option></select></div>
+    <label>Posizione</label>
+    <div class="riga"><select id="fScaffale"></select><input id="fVano" placeholder="vano / cassetto / ripiano"></div>
+    <label>Note</label><textarea id="fNote" rows="2"></textarea>
+    <div id="erroriScheda" class="avviso rosso nascosto"></div>
+    <div style="height:70px"></div>
+  </div>
+  <div class="azioni"><button id="btnElimina" class="pericolo nascosto" style="flex:0 0 auto">Elimina</button><button id="btnSalva">Salva e torna a scansione</button></div>
+</section>
+
+<section data-schermata="elenco">
+  <header class="barra"><div class="pos">Elenco</div><div id="contaElenco"></div></header>
+  <div class="contenuto">
+    <input id="cerca" placeholder="cerca testo o codice" autocomplete="off">
+    <div class="riga" style="margin-top:8px"><select id="filtroScaffale"><option value="">tutti gli scaffali</option></select><select id="filtroBuchi"><option value="">tutti</option><option value="foto">senza foto</option><option value="descrizione">senza descrizione</option><option value="prezzo">senza prezzo</option></select></div>
+  </div>
+  <ul class="lista" id="lista"></ul>
+</section>
+
+<section data-schermata="esporta">
+  <header class="barra"><div class="pos">Esporta</div><div id="versioneApp"></div></header>
+  <div class="contenuto" id="esportaContenuto"></div>
+</section>
+
+<div id="overlayScatto" class="nascosto" style="position:fixed;inset:0;background:#000;z-index:20;display:flex;flex-direction:column">
+  <video id="videoScatto" autoplay muted playsinline style="flex:1;object-fit:cover;width:100%"></video>
+  <div style="display:flex;gap:10px;padding:14px;background:#111"><button id="btnAnnullaScatto" class="secondario">Annulla</button><button id="btnOtturatore" style="flex:2">Scatta</button></div>
+</div>
+
+<nav class="tab">
+  <button data-vai="scansione" class="attivo">Scansione</button>
+  <button data-vai="elenco">Elenco</button>
+  <button data-vai="esporta">Esporta</button>
+</nav>
+
+<dialog id="dlgGiacenza"><p id="dlgGiacenzaTesto"></p><button id="dlgAggiungi">Aggiungi giacenza qui</button><button id="dlgCorreggi" class="secondario">Correggi la quantita' esistente</button><button id="dlgAnnulla" class="secondario">Annulla</button></dialog>
+<dialog id="dlgTesto"><p id="dlgTestoDomanda"></p><input id="dlgTestoInput"><button id="dlgTestoOk">Ok</button><button id="dlgTestoAnnulla" class="secondario">Annulla</button></dialog>
+
+<script>
+
+</script>
+<script>
+"use strict";
+let CATEGORIE = {
+ "versione": "2026-09-03",
+ "categorie": [
+  {
+   "chiave": "viteria_fissaggio",
+   "nome": "Viteria e fissaggio"
+  },
+  {
+   "chiave": "ferramenta_mobili",
+   "nome": "Ferramenta per mobili (cerniere, guide, maniglie)"
+  },
+  {
+   "chiave": "ferramenta_porte",
+   "nome": "Ferramenta per porte e finestre (serrature, cilindri, maniglie)"
+  },
+  {
+   "chiave": "utensili_manuali",
+   "nome": "Utensili manuali"
+  },
+  {
+   "chiave": "elettroutensili",
+   "nome": "Elettroutensili e accessori"
+  },
+  {
+   "chiave": "idraulica",
+   "nome": "Idraulica e raccorderia"
+  },
+  {
+   "chiave": "elettrico",
+   "nome": "Materiale elettrico e illuminazione"
+  },
+  {
+   "chiave": "chimici_vernici",
+   "nome": "Chimici, vernici e spray"
+  },
+  {
+   "chiave": "colle_sigillanti",
+   "nome": "Colle, sigillanti e nastri"
+  },
+  {
+   "chiave": "abrasivi",
+   "nome": "Abrasivi e lame"
+  },
+  {
+   "chiave": "giardinaggio",
+   "nome": "Giardinaggio e irrigazione"
+  },
+  {
+   "chiave": "casalinghi",
+   "nome": "Casalinghi"
+  },
+  {
+   "chiave": "antinfortunistica",
+   "nome": "Antinfortunistica e abbigliamento da lavoro"
+  },
+  {
+   "chiave": "scale_arredo_officina",
+   "nome": "Scale, scaffali e arredo officina"
+  },
+  {
+   "chiave": "altro",
+   "nome": "Altro"
+  }
+ ]
+};
+let SCAFFALI = {
+ "versione": "2026-09-03",
+ "magazzino": "CIMA - Santa Maria Capua Vetere",
+ "scaffali": [
+  {
+   "codice": "A1",
+   "descrizione": "Corsia A, scaffale 1"
+  },
+  {
+   "codice": "A2",
+   "descrizione": "Corsia A, scaffale 2"
+  },
+  {
+   "codice": "A3",
+   "descrizione": "Corsia A, scaffale 3"
+  },
+  {
+   "codice": "B1",
+   "descrizione": "Corsia B, scaffale 1"
+  },
+  {
+   "codice": "B2",
+   "descrizione": "Corsia B, scaffale 2"
+  },
+  {
+   "codice": "B3",
+   "descrizione": "Corsia B, scaffale 3"
+  },
+  {
+   "codice": "BANCO",
+   "descrizione": "Bancone vendita"
+  },
+  {
+   "codice": "RETRO",
+   "descrizione": "Retrobottega"
+  }
+ ]
+};
+
+const S = { dispositivo: "", scaffale: "", vano: "", schermata: "scansione", record: null, fotoNuove: [], esistenti: [], descrizioni: [], aggiornamento: null };
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const ETICHETTE_STATO = { nuovo: "Nuovo", confezione_danneggiata: "Confezione danneggiata", incompleto: "Incompleto", obsoleto: "Obsoleto" };
+
+function vai(nome) {
+  document.querySelectorAll("section[data-schermata]").forEach(s => s.classList.toggle("attiva", s.dataset.schermata === nome));
+  document.querySelectorAll("nav.tab button").forEach(b => b.classList.toggle("attivo", b.dataset.vai === nome));
+  S.schermata = nome;
+  window.scrollTo(0, 0);
+  if (nome === "elenco") mostraElenco();
+  if (nome === "esporta") mostraEsporta();
+  if (nome === "scansione") aggiornaBarra();
+  document.dispatchEvent(new CustomEvent("schermata", { detail: nome }));
+}
+
+function chiediTesto(domanda, valore = "") {
+  return new Promise(res => {
+    $("dlgTestoDomanda").textContent = domanda; $("dlgTestoInput").value = valore;
+    const dlg = $("dlgTesto"); dlg.showModal(); $("dlgTestoInput").focus();
+    $("dlgTestoOk").onclick = () => { dlg.close(); res($("dlgTestoInput").value.trim()); };
+    $("dlgTestoAnnulla").onclick = () => { dlg.close(); res(null); };
+  });
+}
+
+async function aggiornaBarra() {
+  $("posCorrente").textContent = S.scaffale ? S.scaffale + (S.vano ? " / " + S.vano : "") : "nessuna";
+  const oggi = INV.isoLocale(new Date()).slice(0, 10);
+  const tutti = await INV.db.elenco();
+  $("contaOggi").textContent = tutti.filter(r => r.creato.slice(0, 10) === oggi).length;
+  S.descrizioni = tutti.map(r => r.descrizione).filter(Boolean);
+  const ultimo = await INV.db.leggiImpostazione("ultimoExportConfermato", null);
+  const nuoviDopo = ultimo ? tutti.some(r => r.modificato > ultimo) : tutti.length > 0;
+  const scaduto = !ultimo || (Date.now() - new Date(ultimo).getTime()) > 24 * 3600 * 1000;
+  $("avvisoExport").classList.toggle("nascosto", !(nuoviDopo && scaduto));
+}
+
+async function impostaScaffale(codice) {
+  S.scaffale = codice; S.vano = "";
+  await INV.db.scriviImpostazione("scaffale", codice);
+  if (navigator.vibrate) navigator.vibrate(60);
+  aggiornaBarra();
+}
+
+// ----- scheda -----
+function riempiSelect(sel, opzioni, valore) {
+  sel.innerHTML = opzioni.map(o => `<option value="${esc(o.v)}">${esc(o.t)}</option>`).join("");
+  if (valore !== undefined) sel.value = valore;
+}
+
+async function apriDaCodice(info) {
+  if (!S.scaffale) { const s = await chiediTesto("Nessuno scaffale impostato. Codice scaffale (es. B3):"); if (!s) return; await impostaScaffale(s.toUpperCase()); }
+  const esistenti = await INV.db.perCodice(info.codice);
+  const decisione = INV.decidiGiacenza(esistenti, S.scaffale);
+  if (decisione === "nuovo") {
+    const prog = await INV.db.prossimoProgressivo();
+    return apriScheda(INV.nuovoRecord({ codice: info.codice, tipo_codice: info.tipo_codice, posizione: { scaffale: S.scaffale, vano: S.vano } },
+                                      { dispositivo: S.dispositivo, adesso: new Date(), progressivo: prog }), true);
+  }
+  if (decisione === "stessa_posizione") return apriScheda(esistenti.find(r => r.posizione.scaffale === S.scaffale));
+  const base = esistenti[0];
+  $("dlgGiacenzaTesto").textContent = `"${base.descrizione}" e' gia' registrato in ${esistenti.map(r => r.posizione.scaffale + ": " + r.quantita).join(", ")}. Sei in ${S.scaffale}.`;
+  const dlg = $("dlgGiacenza"); dlg.showModal();
+  $("dlgAggiungi").onclick = async () => {
+    dlg.close();
+    const prog = await INV.db.prossimoProgressivo();
+    apriScheda(INV.nuovoRecord({ codice: base.codice, tipo_codice: base.tipo_codice, descrizione: base.descrizione, marca: base.marca, categoria: base.categoria,
+                                 unita: base.unita, prezzo_esposto: base.prezzo_esposto, tipo: base.tipo, componenti: JSON.parse(JSON.stringify(base.componenti)).map(c => ({ ...c, foto: [] })),
+                                 posizione: { scaffale: S.scaffale, vano: S.vano } }, { dispositivo: S.dispositivo, adesso: new Date(), progressivo: prog }), true);
+  };
+  $("dlgCorreggi").onclick = () => { dlg.close(); apriScheda(base); };
+  $("dlgAnnulla").onclick = () => dlg.close();
+}
+
+function apriScheda(record, nuovo = false) {
+  S.record = JSON.parse(JSON.stringify(record)); S.fotoNuove = [];
+  $("titoloScheda").textContent = nuovo ? "Nuovo articolo" : "Modifica articolo";
+  $("btnElimina").classList.toggle("nascosto", nuovo);
+  $("fCodice").value = record.codice; $("tipoCodiceEtichetta").textContent = `(${record.tipo_codice})`;
+  $("fQuantita").value = record.quantita;
+  riempiSelect($("fUnita"), INV.UNITA.map(u => ({ v: u, t: u })), record.unita);
+  $("fDescrizione").value = record.descrizione; $("suggerimenti").innerHTML = "";
+  $("fMarca").value = record.marca || "";
+  riempiSelect($("fCategoria"), CATEGORIE.categorie.map(c => ({ v: c.chiave, t: c.nome })), record.categoria);
+  $("fPrezzo").value = record.prezzo_esposto === null ? "" : record.prezzo_esposto;
+  riempiSelect($("fStato"), INV.STATI.map(s => ({ v: s, t: ETICHETTE_STATO[s] })), record.stato);
+  $("fTipo").value = record.tipo;
+  riempiSelect($("fScaffale"), SCAFFALI.scaffali.map(s => ({ v: s.codice, t: s.codice + " - " + s.descrizione })).concat(
+    SCAFFALI.scaffali.some(s => s.codice === record.posizione.scaffale) ? [] : [{ v: record.posizione.scaffale, t: record.posizione.scaffale }]), record.posizione.scaffale);
+  $("fVano").value = record.posizione.vano || "";
+  $("fNote").value = record.note || "";
+  $("erroriScheda").classList.add("nascosto");
+  mostraComponenti(); mostraMiniature(); aggiornaTipo();
+  vai("scheda");
+  if (nuovo && !record.descrizione) $("fDescrizione").focus(); else $("fQuantita").focus();
+}
+
+function aggiornaTipo() {
+  const tipo = $("fTipo").value;
+  $("blocComponenti").classList.toggle("nascosto", tipo !== "kit");
+  $("blocAppartiene").classList.toggle("nascosto", tipo !== "componente");
+  if (tipo === "componente") INV.db.elenco().then(tutti => {
+    const kit = tutti.filter(r => r.tipo === "kit");
+    riempiSelect($("fAppartiene"), [{ v: "", t: "(non so)" }].concat(kit.map(k => ({ v: k.id, t: k.descrizione + " (" + k.codice + ")" }))), S.record.appartiene_a || "");
+  });
+}
+
+function mostraComponenti() {
+  $("componenti").innerHTML = (S.record.componenti || []).map((c, i) => `
+    <div class="componente" data-i="${i}">
+      <input class="cDescr" placeholder="descrizione componente" value="${esc(c.descrizione || "")}">
+      <div class="riga" style="margin-top:6px"><div><label>per kit</label><input class="cQta" type="number" min="0" value="${c.quantita_per_kit}"></div>
+      <div><label>mancanti</label><input class="cManc" type="number" min="0" value="${c.mancanti || 0}"></div>
+      <button class="pericolo cRimuovi" style="flex:0 0 auto">x</button></div>
+    </div>`).join("");
+}
+function leggiComponenti() {
+  return [...document.querySelectorAll("#componenti .componente")].map((el, i) => ({
+    descrizione: el.querySelector(".cDescr").value.trim(), quantita_per_kit: Number(el.querySelector(".cQta").value) || 0,
+    mancanti: Number(el.querySelector(".cManc").value) || 0, foto: (S.record.componenti[i] || {}).foto || [] }));
+}
+
+async function mostraMiniature() {
+  const box = $("miniature"); box.innerHTML = "";
+  for (const nome of S.record.foto) {
+    const nuova = S.fotoNuove.find(f => f.nome === nome);
+    const blob = nuova ? nuova.blob : await INV.db.leggiFoto(nome);
+    if (!blob) continue;
+    const img = document.createElement("img"); img.src = URL.createObjectURL(blob); img.title = nome;
+    img.onclick = () => { if (confirm("Togliere questa foto?")) { S.record.foto = S.record.foto.filter(n => n !== nome); S.fotoNuove = S.fotoNuove.filter(f => f.nome !== nome); mostraMiniature(); } };
+    box.appendChild(img);
+  }
+}
+async function aggiungiFoto(blob) {
+  const sp = await INV.stimaSpazio();
+  if (sp.percentualeLibera < 10) { alert("Memoria quasi piena: esporta prima di scattare altre foto."); return; }
+  const ridotta = await INV.ridimensionaFoto(blob);
+  const n = S.record.foto.length + 1;
+  const nome = `${S.record.id}_${Date.now()}_${n}.jpg`;
+  S.record.foto.push(nome); S.fotoNuove.push({ nome, blob: ridotta });
+  mostraMiniature();
+}
+
+function leggiScheda() {
+  const r = S.record;
+  r.quantita = Number($("fQuantita").value); r.unita = $("fUnita").value; r.descrizione = $("fDescrizione").value.trim();
+  r.marca = $("fMarca").value.trim(); r.categoria = $("fCategoria").value;
+  r.prezzo_esposto = $("fPrezzo").value === "" ? null : Number($("fPrezzo").value);
+  r.tipo = $("fTipo").value; r.componenti = r.tipo === "kit" ? leggiComponenti() : [];
+  r.appartiene_a = r.tipo === "componente" ? ($("fAppartiene").value || null) : null;
+  r.posizione = { scaffale: $("fScaffale").value, vano: $("fVano").value.trim() };
+  r.note = $("fNote").value.trim();
+  r.stato = $("fStato").value;
+  if (INV.statoEffettivo(r) === "incompleto") r.stato = "incompleto";
+  return r;
+}
+
+async function salvaScheda() {
+  const r = leggiScheda();
+  const errori = INV.erroriRecord(r);
+  if (!r.descrizione) errori.push("descrizione mancante");
+  if (errori.length) { $("erroriScheda").textContent = errori.join(". "); $("erroriScheda").classList.remove("nascosto"); return; }
+  try {
+    await INV.db.salvaArticolo(r, S.fotoNuove);
+  } catch (e) {
+    $("erroriScheda").textContent = "Salvataggio fallito: " + e.message; $("erroriScheda").classList.remove("nascosto"); return;
+  }
+  S.vano = r.posizione.vano; if (r.posizione.scaffale !== S.scaffale) await impostaScaffale(r.posizione.scaffale);
+  S.record = null; S.fotoNuove = [];
+  vai("scansione");
+}
+
+// ----- elenco -----
+async function mostraElenco() {
+  const tutti = await INV.db.elenco();
+  const q = $("cerca").value.trim().toLowerCase(), sc = $("filtroScaffale").value, buchi = $("filtroBuchi").value;
+  const scaffaliPresenti = [...new Set(tutti.map(r => r.posizione.scaffale))].sort();
+  $("filtroScaffale").innerHTML = '<option value="">tutti gli scaffali</option>' + scaffaliPresenti.map(s => `<option value="${esc(s)}"${s === sc ? " selected" : ""}>${esc(s)}</option>`).join("");
+  const filtrati = tutti.filter(r => (!q || r.descrizione.toLowerCase().includes(q) || r.codice.toLowerCase().includes(q) || (r.marca || "").toLowerCase().includes(q))
+    && (!sc || r.posizione.scaffale === sc)
+    && (buchi !== "foto" || r.foto.length === 0) && (buchi !== "descrizione" || !r.descrizione) && (buchi !== "prezzo" || r.prezzo_esposto === null));
+  $("contaElenco").textContent = `${filtrati.length} / ${tutti.length}`;
+  $("lista").innerHTML = filtrati.map(r => `<li data-id="${esc(r.id)}"><div><b>${esc(r.descrizione) || "(senza descrizione)"}</b><small>${esc(r.codice)} - ${esc(r.posizione.scaffale)}${r.posizione.vano ? " / " + esc(r.posizione.vano) : ""} - ${esc(r.tipo)}${r.foto.length ? "" : " - senza foto"}</small></div><div style="text-align:right"><b>${r.quantita}</b> ${esc(r.unita)}<small>${r.prezzo_esposto === null ? "-" : r.prezzo_esposto.toFixed(2) + " EUR"}</small></div></li>`).join("");
+}
+
+// ----- esporta -----
+async function mostraEsporta() {
+  $("versioneApp").textContent = "v" + INV.VERSIONE + (S.aggiornamento ? " (nuova versione pronta)" : "");
+  const st = await INV.db.statistiche();
+  const sp = await INV.stimaSpazio();
+  const storico = await INV.db.leggiImpostazione("esportazioni", []);
+  $("esportaContenuto").innerHTML = `
+    <p>Articoli: <b>${st.articoli}</b> - Pezzi: <b>${st.pezzi}</b> - Foto: <b>${st.foto}</b> (${(st.byteFoto / 1048576).toFixed(1)} MB)</p>
+    <p style="color:#555">Spazio libero stimato: ${sp.percentualeLibera.toFixed(0)} %${sp.quota ? ` (${(sp.usati / 1048576).toFixed(0)} MB usati su ${(sp.quota / 1048576).toFixed(0)})` : ""}</p>
+    <button id="btnEsporta" ${st.articoli ? "" : "disabled"}>Esporta ZIP</button>
+    <div id="esitoExport"></div>
+    <h3>Esportazioni</h3>
+    <ul class="lista" id="listaExport">${storico.slice().reverse().map((e, i) => `<li><div><b>${esc(e.nome)}</b><small>${e.quando.replace("T", " ")} - ${e.n_articoli} articoli, ${e.n_foto} foto</small></div>
+      <div>${e.confermata ? '<span style="color:var(--verde)">confermata</span>' : `<button class="secondario btnConferma" data-i="${storico.length - 1 - i}" style="padding:8px 10px">Ho salvato</button>`}</div></li>`).join("")}</ul>
+    <label>Nome dispositivo</label><input id="fDispositivo" value="${esc(S.dispositivo)}"><button id="btnDispositivo" class="secondario" style="margin-top:8px">Salva nome</button>
+    <p style="color:#888;font-size:.85rem;margin-top:24px">Inventario CIMA v${INV.VERSIONE}. I dati restano su questo telefono finche' non li esporti.</p>`;
+  if (S.aggiornamento) {
+    const b = document.createElement("button"); b.textContent = "Aggiorna app"; b.style.marginBottom = "12px";
+    b.onclick = () => { S.aggiornamento.postMessage({ tipo: "aggiorna" }); };
+    $("esportaContenuto").prepend(b);
+  }
+  $("btnEsporta").onclick = esporta;
+  $("btnDispositivo").onclick = async () => { S.dispositivo = $("fDispositivo").value.trim() || "telefono"; await INV.db.scriviImpostazione("dispositivo", S.dispositivo); alert("Salvato"); };
+  document.querySelectorAll(".btnConferma").forEach(b => b.onclick = async () => {
+    const lista = await INV.db.leggiImpostazione("esportazioni", []);
+    lista[Number(b.dataset.i)].confermata = true;
+    await INV.db.scriviImpostazione("esportazioni", lista);
+    await INV.db.scriviImpostazione("ultimoExportConfermato", INV.isoLocale(new Date()));
+    mostraEsporta();
+  });
+}
+
+async function esporta() {
+  $("btnEsporta").disabled = true; $("esitoExport").textContent = "Preparazione dello ZIP...";
+  try {
+    const articoli = (await INV.db.elenco()).sort((a, b) => a.id.localeCompare(b.id));
+    const exp = await INV.costruisciExport(articoli, n => INV.db.leggiFoto(n), { dispositivo: S.dispositivo, adesso: new Date() });
+    const lista = await INV.db.leggiImpostazione("esportazioni", []);
+    lista.push({ quando: INV.isoLocale(new Date()), nome: exp.nome, n_articoli: exp.manifest.n_articoli, n_foto: exp.manifest.n_foto, confermata: false });
+    await INV.db.scriviImpostazione("esportazioni", lista);
+    const file = new File([exp.blob], exp.nome, { type: "application/zip" });
+    let condiviso = false;
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: exp.nome }); condiviso = true; } catch (e) { if (e.name === "AbortError") { $("esitoExport").textContent = "Condivisione annullata: lo ZIP non e' stato salvato. Riprova."; } }
+    }
+    if (!condiviso) {
+      const a = document.createElement("a"); a.href = URL.createObjectURL(exp.blob); a.download = exp.nome; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      $("esitoExport").innerHTML = `ZIP scaricato nella cartella Download: <b>${exp.nome}</b> (${(exp.blob.size / 1048576).toFixed(1)} MB). Copialo su Drive o inviatelo, poi premi "Ho salvato".`;
+    } else {
+      $("esitoExport").innerHTML = `ZIP condiviso: <b>${exp.nome}</b>. Quando e' al sicuro premi "Ho salvato".`;
+    }
+    if (exp.fotoMancanti.length) $("esitoExport").innerHTML += `<div class="avviso giallo">${exp.fotoMancanti.length} foto referenziate non trovate in memoria (elencate nel foglio Anomalie).</div>`;
+    const msg = $("esitoExport").innerHTML;
+    await mostraEsporta();
+    $("esitoExport").innerHTML = msg;
+  } catch (e) {
+    $("esitoExport").innerHTML = `<div class="avviso rosso">Esportazione fallita: ${e.message}</div>`;
+    $("btnEsporta").disabled = false;
+  }
+}
+
+// ----- fotocamera -----
+const Fotocamera = {
+  stream: null, track: null, apertura: null,
+  async avvia(videoEl) {
+    if (!this.stream && this.apertura) {
+      await this.apertura;
+    } else if (!this.stream) {
+      try {
+        this.apertura = navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+        this.stream = await this.apertura;
+        this.track = this.stream.getVideoTracks()[0];
+      } finally {
+        this.apertura = null;
+      }
+    }
+    videoEl.srcObject = this.stream;
+    await videoEl.play().catch(() => {});
+  },
+  ferma() { if (this.stream) { this.stream.getTracks().forEach(t => t.stop()); this.stream = null; this.track = null; } },
+  async torcia(on) {
+    if (!this.track) return false;
+    const cap = this.track.getCapabilities ? this.track.getCapabilities() : {};
+    if (!cap.torch) return false;
+    try { await this.track.applyConstraints({ advanced: [{ torch: on }] }); } catch (e) { return false; }
+    return true;
+  },
+  scatta(videoEl) {
+    const cv = document.createElement("canvas"); cv.width = videoEl.videoWidth; cv.height = videoEl.videoHeight;
+    cv.getContext("2d").drawImage(videoEl, 0, 0);
+    return new Promise((res, rej) => cv.toBlob(b => b ? res(b) : rej(new Error("scatto fallito")), "image/jpeg", 0.92));
+  },
+};
+
+const Scanner = {
+  detector: null, timer: null, ultimo: { valore: "", quando: 0 }, bloccoFino: 0,
+  disponibile() { return "BarcodeDetector" in window; },
+  async avvia(videoEl, onCodice) {
+    if (!this.disponibile()) return;
+    if (!this.detector) this.detector = new BarcodeDetector({ formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "qr_code"] });
+    this.ferma();
+    this.timer = setInterval(async () => {
+      if (videoEl.readyState < 2 || Date.now() < this.bloccoFino) return;
+      let codici = [];
+      try { codici = await this.detector.detect(videoEl); } catch (e) { return; }
+      if (!codici.length) return;
+      const c = codici[0];
+      const ora = Date.now();
+      if (this.ultimo.valore === c.rawValue && ora - this.ultimo.quando < 1000) {
+        this.ultimo = { valore: "", quando: 0 };
+        this.bloccoFino = ora + 1500; // evita di rileggere lo stesso codice subito dopo
+        onCodice(c.rawValue, c.format);
+      } else {
+        this.ultimo = { valore: c.rawValue, quando: ora };
+      }
+    }, 150);
+  },
+  ferma() { if (this.timer) { clearInterval(this.timer); this.timer = null; } },
+};
+
+let torciaAccesa = false;
+async function avviaScansione() {
+  try {
+    await Fotocamera.avvia($("video"));
+    $("permessoNegato").classList.add("nascosto");
+  } catch (e) {
+    $("permessoNegato").classList.remove("nascosto");
+    $("statoScanner").textContent = "";
+    return;
+  }
+  if (!Scanner.disponibile()) { $("statoScanner").textContent = "Lettore codici non disponibile su questo browser: usa il campo manuale."; return; }
+  $("statoScanner").textContent = "Inquadra un codice a barre o il QR dello scaffale";
+  Scanner.avvia($("video"), async (valore, formato) => {
+    const info = INV.classificaCodice(valore, formato);
+    if (!info) { $("statoScanner").textContent = formato === "qr_code" ? "QR non riconosciuto (serve SCAFFALE:...)" : "Codice non valido, riprova"; return; }
+    if (info.tipo === "scaffale") { await impostaScaffale(info.scaffale); $("statoScanner").textContent = "Scaffale " + info.scaffale; return; }
+    Scanner.ferma();
+    apriDaCodice(info);
+  });
+}
+function fermaScansione() { Scanner.ferma(); Fotocamera.ferma(); torciaAccesa = false; }
+document.addEventListener("schermata", e => { if (e.detail === "scansione") avviaScansione(); else fermaScansione(); });
+document.addEventListener("visibilitychange", () => { if (document.hidden) fermaScansione(); else if (S.schermata === "scansione") avviaScansione(); });
+$("btnTorcia").onclick = async () => { torciaAccesa = !torciaAccesa; if (!(await Fotocamera.torcia(torciaAccesa))) { torciaAccesa = false; alert("Torcia non controllabile da questo browser."); } };
+
+// ----- eventi -----
+document.querySelectorAll("nav.tab button").forEach(b => b.onclick = () => { if (S.schermata === "scheda" && !confirm("Abbandonare la scheda senza salvare?")) return; vai(b.dataset.vai); });
+$("btnCodiceManuale").onclick = async () => {
+  const v = $("codiceManuale").value.trim(); if (!v) return;
+  $("codiceManuale").value = "";
+  if (v.toUpperCase().startsWith(INV.PREFISSO_QR_SCAFFALE)) return impostaScaffale(v.slice(INV.PREFISSO_QR_SCAFFALE.length).toUpperCase());
+  const info = INV.classificaCodice(v, /^\d{8}$|^\d{12,13}$/.test(v) ? "ean_13" : "code_128");
+  if (!info) { alert("Codice EAN con cifra di controllo errata: ricontrolla o registra come 'senza codice'."); return; }
+  apriDaCodice(info);
+};
+$("codiceManuale").onkeydown = e => { if (e.key === "Enter") $("btnCodiceManuale").click(); };
+$("btnSenzaCodice").onclick = async () => { const n = await INV.db.prossimoInterno(); apriDaCodice({ codice: INV.nuovoCodiceInterno(n), tipo_codice: "interno" }); };
+$("btnCambiaScaffale").onclick = async () => { const s = await chiediTesto("Codice scaffale:", S.scaffale); if (s) impostaScaffale(s.toUpperCase()); };
+$("btnChiudiScheda").onclick = () => { if (confirm("Abbandonare la scheda senza salvare?")) { S.record = null; S.fotoNuove = []; vai("scansione"); } };
+$("btnSalva").onclick = salvaScheda;
+$("btnElimina").onclick = async () => { if (confirm("Eliminare definitivamente questo articolo e le sue foto?")) { await INV.db.eliminaArticolo(S.record.id); S.record = null; vai("elenco"); } };
+document.querySelectorAll(".qta button").forEach(b => b.onclick = () => { $("fQuantita").value = Math.max(0, (Number($("fQuantita").value) || 0) + Number(b.dataset.delta)); });
+$("fDescrizione").oninput = () => {
+  const s = INV.suggerimenti(S.descrizioni, $("fDescrizione").value);
+  $("suggerimenti").innerHTML = s.map(d => `<button class="secondario" type="button">${esc(d)}</button>`).join("");
+  document.querySelectorAll("#suggerimenti button").forEach(b => b.onclick = () => { $("fDescrizione").value = b.textContent; $("suggerimenti").innerHTML = ""; });
+};
+$("fTipo").onchange = aggiornaTipo;
+$("btnAggiungiComponente").onclick = () => { S.record.componenti = leggiComponenti(); S.record.componenti.push({ descrizione: "", quantita_per_kit: 1, mancanti: 0, foto: [] }); mostraComponenti(); };
+$("componenti").onclick = e => { if (e.target.classList.contains("cRimuovi")) { const i = Number(e.target.closest(".componente").dataset.i); S.record.componenti = leggiComponenti(); S.record.componenti.splice(i, 1); mostraComponenti(); } };
+$("btnNuovaCategoria").onclick = async () => {
+  const nome = await chiediTesto("Nome della nuova categoria:"); if (!nome) return;
+  const chiave = nome.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  if (!CATEGORIE.categorie.some(c => c.chiave === chiave)) { CATEGORIE.categorie.push({ chiave, nome, extra: true }); await INV.db.scriviImpostazione("categorieExtra", CATEGORIE.categorie.filter(c => c.extra)); }
+  riempiSelect($("fCategoria"), CATEGORIE.categorie.map(c => ({ v: c.chiave, t: c.nome })), chiave);
+};
+$("btnScatta").onclick = async () => {
+  if (!navigator.mediaDevices) { $("fileFoto").click(); return; }
+  $("overlayScatto").classList.remove("nascosto");
+  try { await Fotocamera.avvia($("videoScatto")); } catch (e) { $("overlayScatto").classList.add("nascosto"); $("fileFoto").click(); }
+};
+$("btnAnnullaScatto").onclick = () => { $("overlayScatto").classList.add("nascosto"); Fotocamera.ferma(); };
+$("btnOtturatore").onclick = async () => {
+  try { const b = await Fotocamera.scatta($("videoScatto")); await aggiungiFoto(b); } catch (e) { alert("Scatto fallito: " + e.message); }
+  $("overlayScatto").classList.add("nascosto"); Fotocamera.ferma();
+};
+$("fileFoto").onchange = async () => { const f = $("fileFoto").files[0]; if (f) await aggiungiFoto(f); $("fileFoto").value = ""; };
+["cerca", "filtroScaffale", "filtroBuchi"].forEach(id => $(id).oninput = mostraElenco);
+$("lista").onclick = async e => { const li = e.target.closest("li"); if (!li) return; const r = await INV.db.leggi(li.dataset.id); if (r) apriScheda(r); };
+
+// ----- service worker -----
+if ("serviceWorker" in navigator && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
+  navigator.serviceWorker.register("sw.js").then(reg => {
+    reg.addEventListener("updatefound", () => {
+      const nuovo = reg.installing;
+      nuovo.addEventListener("statechange", () => {
+        if (nuovo.state === "installed" && navigator.serviceWorker.controller) {
+          S.aggiornamento = nuovo;
+          if (S.schermata === "esporta") mostraEsporta();
+        }
+      });
+    });
+  }).catch(() => {});
+  navigator.serviceWorker.addEventListener("controllerchange", () => location.reload());
+}
+
+// ----- avvio -----
+async function avvio() {
+  if (!CATEGORIE) CATEGORIE = await (await fetch("../data/categorie.json")).json();
+  if (!SCAFFALI) SCAFFALI = await (await fetch("../data/scaffali.json")).json();
+  const extra = await INV.db.leggiImpostazione("categorieExtra", []);
+  for (const c of extra) if (!CATEGORIE.categorie.some(x => x.chiave === c.chiave)) CATEGORIE.categorie.push(c);
+  S.dispositivo = await INV.db.leggiImpostazione("dispositivo", "");
+  if (!S.dispositivo) { S.dispositivo = (await chiediTesto("Nome di questo telefono (es. S25-Pasquale):", "S25-Pasquale")) || "telefono"; await INV.db.scriviImpostazione("dispositivo", S.dispositivo); }
+  if (navigator.storage && navigator.storage.persist) {
+    const gia = await navigator.storage.persisted();
+    const ok = gia || await navigator.storage.persist();
+    $("avvisoPersist").classList.toggle("nascosto", ok);
+  }
+  S.scaffale = await INV.db.leggiImpostazione("scaffale", "");
+  aggiornaBarra();
+  if (S.schermata === "scansione") avviaScansione();
+}
+avvio();
+</script>
+</body>
+</html>

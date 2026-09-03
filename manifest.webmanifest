@@ -1,0 +1,11 @@
+{
+  "name": "Inventario CIMA",
+  "short_name": "Inventario",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#1b2a41",
+  "icons": [{ "src": "icona.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
