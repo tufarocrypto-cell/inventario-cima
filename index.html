@@ -133,7 +133,7 @@ dialog button { margin-top: 10px; width: 100%; }
 (function () {
   "use strict";
   const INV = {};
-  INV.VERSIONE = "0.1.5";
+  INV.VERSIONE = "0.1.6";
   INV.PREFISSO_QR_SCAFFALE = "SCAFFALE:";
   INV.TIPI_CODICE = ["EAN", "SKU", "interno", "manuale"];
   INV.TIPI = ["semplice", "kit", "componente"];
@@ -992,7 +992,7 @@ $("btnCodiceManuale").onclick = async () => {
   const v = $("codiceManuale").value.trim(); if (!v) return;
   $("codiceManuale").value = "";
   if (v.toUpperCase().startsWith(INV.PREFISSO_QR_SCAFFALE)) return impostaScaffale(v.slice(INV.PREFISSO_QR_SCAFFALE.length).toUpperCase());
-  const info = INV.classificaCodice(v, /^\d{8}$|^\d{12,13}$/.test(v) ? "ean_13" : "code_128");
+  const info = INV.classificaCodice(v, /^\d{8}$|^\d{12,13}$/.test(v) ? "ean_13" : undefined); // digitato a mano: manuale
   if (!info) { alert("Codice EAN con cifra di controllo errata: ricontrolla o registra come 'senza codice'."); return; }
   apriDaCodice(info);
 };
