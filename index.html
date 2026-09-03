@@ -70,13 +70,14 @@ dialog button { margin-top: 10px; width: 100%; }
   <header class="barra"><div class="pos" id="titoloScheda">Articolo</div><button id="btnChiudiScheda" class="secondario" style="padding:8px 12px">Annulla</button></header>
   <div class="contenuto" id="formScheda">
     <label>Codice <span id="tipoCodiceEtichetta"></span></label>
-    <input id="fCodice" readonly>
+    <div class="riga"><input id="fCodice" readonly><button id="btnGoogle" class="secondario" style="flex:0 0 auto" type="button">Cerca su Google</button></div>
     <label>Quantita'</label>
     <div class="qta"><button class="secondario" data-delta="-1">-1</button><button class="secondario" data-delta="1">+1</button><input id="fQuantita" type="number" inputmode="decimal" min="0" step="any"><button class="secondario" data-delta="10">+10</button></div>
     <label>Unita'</label><select id="fUnita"></select>
     <label>Descrizione</label>
     <input id="fDescrizione" autocomplete="off" autocapitalize="sentences">
     <div class="suggerimenti" id="suggerimenti"></div>
+    <div class="suggerimenti" id="aiuti"></div>
     <label>Foto</label>
     <div class="miniature" id="miniature"></div>
     <button id="btnScatta" class="secondario">Scatta foto</button>
@@ -132,7 +133,7 @@ dialog button { margin-top: 10px; width: 100%; }
 (function () {
   "use strict";
   const INV = {};
-  INV.VERSIONE = "0.1.4";
+  INV.VERSIONE = "0.1.5";
   INV.PREFISSO_QR_SCAFFALE = "SCAFFALE:";
   INV.TIPI_CODICE = ["EAN", "SKU", "interno", "manuale"];
   INV.TIPI = ["semplice", "kit", "componente"];
@@ -175,6 +176,23 @@ dialog button { margin-top: 10px; width: 100%; }
     if (!nonEsportati.length) return false;
     const primo = nonEsportati.map(r => r.modificato).sort()[0];
     return adesso.getTime() - new Date(primo).getTime() > 24 * 3600 * 1000;
+  };
+
+  // Prodotto simile gia' registrato: stesso produttore (prefisso EAN 9..7 cifre) o stesso
+  // prefisso di SKU (almeno 4 caratteri). Vince il prefisso piu' lungo, poi il piu' recente.
+  INV.suggerisciDaSimili = function (records, codice, tipoCodice) {
+    if (!codice || tipoCodice === "interno") return null;
+    const c = String(codice);
+    const lunghezze = [];
+    if (tipoCodice === "EAN") lunghezze.push(9, 8, 7);
+    else for (let l = Math.min(c.length - 1, 12); l >= 4; l--) lunghezze.push(l);
+    const stessoTipo = records.filter(r => r.tipo_codice === tipoCodice && r.codice !== c && r.descrizione);
+    for (const l of lunghezze) {
+      const p = c.slice(0, l);
+      const cand = stessoTipo.filter(r => r.codice.startsWith(p)).sort((a, b) => (a.modificato < b.modificato ? 1 : -1));
+      if (cand.length) return { descrizione: cand[0].descrizione, marca: cand[0].marca || "", categoria: cand[0].categoria };
+    }
+    return null;
   };
 
   const pad = (n, l) => String(n).padStart(l, "0");
@@ -608,8 +626,13 @@ async function apriDaCodice(info) {
   const decisione = INV.decidiGiacenza(esistenti, S.scaffale);
   if (decisione === "nuovo") {
     const prog = await INV.db.prossimoProgressivo();
-    return apriScheda(INV.nuovoRecord({ codice: info.codice, tipo_codice: info.tipo_codice, posizione: { scaffale: S.scaffale, vano: S.vano } },
-                                      { dispositivo: S.dispositivo, adesso: new Date(), progressivo: prog }), true);
+    const simile = INV.suggerisciDaSimili(await INV.db.elenco(), info.codice, info.tipo_codice);
+    const record = INV.nuovoRecord({ codice: info.codice, tipo_codice: info.tipo_codice, posizione: { scaffale: S.scaffale, vano: S.vano },
+                                     ...(simile ? { marca: simile.marca, categoria: simile.categoria } : {}) },
+                                   { dispositivo: S.dispositivo, adesso: new Date(), progressivo: prog });
+    apriScheda(record, true);
+    arricchisciScheda(record, simile);
+    return;
   }
   if (decisione === "stessa_posizione") return apriScheda(esistenti.find(r => r.posizione.scaffale === S.scaffale));
   const base = esistenti[0];
@@ -633,7 +656,7 @@ function apriScheda(record, nuovo = false) {
   $("fCodice").value = record.codice; $("tipoCodiceEtichetta").textContent = `(${record.tipo_codice})`;
   $("fQuantita").value = record.quantita;
   riempiSelect($("fUnita"), INV.UNITA.map(u => ({ v: u, t: u })), record.unita);
-  $("fDescrizione").value = record.descrizione; $("suggerimenti").innerHTML = "";
+  $("fDescrizione").value = record.descrizione; $("suggerimenti").innerHTML = ""; $("aiuti").innerHTML = "";
   $("fMarca").value = record.marca || "";
   riempiSelect($("fCategoria"), CATEGORIE.categorie.map(c => ({ v: c.chiave, t: c.nome })), record.categoria);
   $("fPrezzo").value = record.prezzo_esposto === null ? "" : record.prezzo_esposto;
@@ -647,6 +670,47 @@ function apriScheda(record, nuovo = false) {
   mostraComponenti(); mostraMiniature(); aggiornaTipo();
   vai("scheda");
   if (nuovo && !record.descrizione) $("fDescrizione").focus(); else $("fQuantita").focus();
+}
+
+// Aiuti alla compilazione di una scheda nuova: prodotto simile gia' registrato e ricerca online.
+function arricchisciScheda(record, simile) {
+  if (simile && simile.descrizione) {
+    const b = document.createElement("button"); b.type = "button"; b.className = "secondario"; b.textContent = "Simile: " + simile.descrizione;
+    b.onclick = () => { $("fDescrizione").value = simile.descrizione; $("fDescrizione").focus(); };
+    $("aiuti").appendChild(b);
+  }
+  if (record.tipo_codice !== "EAN" || !navigator.onLine) return;
+  const nota = document.createElement("small"); nota.textContent = "Cerco online..."; $("aiuti").appendChild(nota);
+  cercaOnline(record.codice).then(ris => {
+    if (!S.record || S.record.id !== record.id) return;
+    if (!ris) { nota.textContent = "Non trovato online."; return; }
+    if (!$("fDescrizione").value.trim()) $("fDescrizione").value = ris.descrizione;
+    if (ris.marca && !$("fMarca").value.trim()) $("fMarca").value = ris.marca;
+    nota.textContent = "Da internet (" + ris.fonte + "): " + ris.descrizione + (ris.marca ? " - " + ris.marca : "");
+  }).catch(() => { nota.textContent = "Ricerca online non riuscita."; });
+}
+
+async function scaricaJson(url, ms = 6000) {
+  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
+  try { const r = await fetch(url, { signal: ctrl.signal }); return await r.json(); }
+  catch (e) { return null; }
+  finally { clearTimeout(t); }
+}
+
+// Fonti in ordine: EAN-Search (con chiave salvata in Esporta), poi archivi aperti gratuiti.
+async function cercaOnline(ean) {
+  const chiave = await INV.db.leggiImpostazione("chiaveEanSearch", "");
+  if (chiave) {
+    const j = await scaricaJson(`https://api.ean-search.org/api?token=${encodeURIComponent(chiave)}&op=barcode-lookup&format=json&ean=${encodeURIComponent(ean)}`);
+    const p = Array.isArray(j) ? j[0] : j;
+    if (p && p.name && !p.error) return { descrizione: String(p.name), marca: "", fonte: "EAN-Search" };
+  }
+  for (const [nome, url] of [["Open Products Facts", `https://world.openproductsfacts.org/api/v2/product/${ean}.json?fields=product_name,brands`],
+                             ["Open Food Facts", `https://world.openfoodfacts.org/api/v2/product/${ean}.json?fields=product_name,brands`]]) {
+    const j = await scaricaJson(url);
+    if (j && j.status === 1 && j.product && j.product.product_name) return { descrizione: j.product.product_name, marca: j.product.brands || "", fonte: nome };
+  }
+  return null;
 }
 
 function aggiornaTipo() {
@@ -771,6 +835,7 @@ async function mostraDiagnostica() {
 
 async function mostraEsporta() {
   $("versioneApp").textContent = "v" + INV.VERSIONE + (S.aggiornamento ? " (nuova versione pronta)" : "");
+  const chiaveEan = await INV.db.leggiImpostazione("chiaveEanSearch", "");
   const st = await INV.db.statistiche();
   const sp = await INV.stimaSpazio();
   const storico = await INV.db.leggiImpostazione("esportazioni", []);
@@ -783,6 +848,7 @@ async function mostraEsporta() {
     <ul class="lista" id="listaExport">${storico.slice().reverse().map((e, i) => `<li><div><b>${esc(e.nome)}</b><small>${e.quando.replace("T", " ")} - ${e.n_articoli} articoli, ${e.n_foto} foto</small></div>
       <div>${e.confermata ? '<span style="color:var(--verde)">confermata</span>' : `<button class="secondario btnConferma" data-i="${storico.length - 1 - i}" style="padding:8px 10px">Ho salvato</button>`}</div></li>`).join("")}</ul>
     <label>Nome dispositivo</label><input id="fDispositivo" value="${esc(S.dispositivo)}"><button id="btnDispositivo" class="secondario" style="margin-top:8px">Salva nome</button>
+    <label>Chiave EAN-Search (facoltativa, per la ricerca online dei prodotti)</label><input id="fChiaveEan" value="${esc(chiaveEan)}" autocomplete="off" autocapitalize="off"><button id="btnChiaveEan" class="secondario" style="margin-top:8px">Salva chiave</button>
     <p style="color:#888;font-size:.85rem;margin-top:24px">Inventario CIMA v${INV.VERSIONE}. I dati restano su questo telefono finche' non li esporti.</p>
     <details style="margin-top:12px;color:#666;font-size:.8rem"><summary>Diagnostica</summary>
       <p id="diagnostica" style="word-break:break-all"></p></details>`;
@@ -793,6 +859,7 @@ async function mostraEsporta() {
     $("esportaContenuto").prepend(b);
   }
   $("btnEsporta").onclick = esporta;
+  $("btnChiaveEan").onclick = async () => { await INV.db.scriviImpostazione("chiaveEanSearch", $("fChiaveEan").value.trim()); alert("Chiave salvata"); };
   $("btnDispositivo").onclick = async () => { S.dispositivo = $("fDispositivo").value.trim() || "telefono"; await INV.db.scriviImpostazione("dispositivo", S.dispositivo); alert("Salvato"); };
   document.querySelectorAll(".btnConferma").forEach(b => b.onclick = async () => {
     const lista = await INV.db.leggiImpostazione("esportazioni", []);
@@ -934,6 +1001,7 @@ $("btnSenzaCodice").onclick = async () => { const n = await INV.db.prossimoInter
 $("btnCambiaScaffale").onclick = async () => { const s = await chiediTesto("Codice scaffale:", S.scaffale); if (s) impostaScaffale(s.toUpperCase()); };
 $("btnChiudiScheda").onclick = () => { if (confirm("Abbandonare la scheda senza salvare?")) { S.record = null; S.fotoNuove = []; vai("scansione"); } };
 $("btnSalva").onclick = salvaScheda;
+$("btnGoogle").onclick = () => { const c = $("fCodice").value.trim(); if (c) window.open("https://www.google.com/search?q=" + encodeURIComponent(c), "_blank"); };
 $("btnElimina").onclick = async () => { if (confirm("Eliminare definitivamente questo articolo e le sue foto?")) { await INV.db.eliminaArticolo(S.record.id); S.record = null; vai("elenco"); } };
 document.querySelectorAll(".qta button").forEach(b => b.onclick = () => { $("fQuantita").value = Math.max(0, (Number($("fQuantita").value) || 0) + Number(b.dataset.delta)); });
 $("fDescrizione").oninput = () => {
