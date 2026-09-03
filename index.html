@@ -132,7 +132,7 @@ dialog button { margin-top: 10px; width: 100%; }
 (function () {
   "use strict";
   const INV = {};
-  INV.VERSIONE = "0.1.2";
+  INV.VERSIONE = "0.1.3";
   INV.PREFISSO_QR_SCAFFALE = "SCAFFALE:";
   INV.TIPI_CODICE = ["EAN", "SKU", "interno", "manuale"];
   INV.TIPI = ["semplice", "kit", "componente"];
@@ -543,7 +543,9 @@ let SCAFFALI = {
  ]
 };
 
-const S = { dispositivo: "", scaffale: "", vano: "", schermata: "scansione", record: null, fotoNuove: [], esistenti: [], descrizioni: [], aggiornamento: null };
+const S = { dispositivo: "", scaffale: "", vano: "", schermata: "scansione", record: null, fotoNuove: [], esistenti: [], descrizioni: [], aggiornamento: null, ultimoErrore: "", salvataggioInCorso: false };
+window.addEventListener("error", e => { S.ultimoErrore = (e.message || "errore") + " @" + (e.lineno || "?"); });
+window.addEventListener("unhandledrejection", e => { S.ultimoErrore = "promessa: " + (e.reason && (e.reason.stack || e.reason.message) || e.reason); });
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const ETICHETTE_STATO = { nuovo: "Nuovo", confezione_danneggiata: "Confezione danneggiata", incompleto: "Incompleto", obsoleto: "Obsoleto" };
@@ -700,19 +702,37 @@ function leggiScheda() {
   return r;
 }
 
+function mostraErroreScheda(testo) {
+  const e = $("erroriScheda"); e.textContent = testo; e.classList.remove("nascosto");
+  e.scrollIntoView({ block: "center", behavior: "smooth" });
+  if (navigator.vibrate) navigator.vibrate([40, 40, 40]);
+}
+
 async function salvaScheda() {
-  const r = leggiScheda();
-  const errori = INV.erroriRecord(r);
-  if (!r.descrizione) errori.push("descrizione mancante");
-  if (errori.length) { $("erroriScheda").textContent = errori.join(". "); $("erroriScheda").classList.remove("nascosto"); return; }
+  if (S.salvataggioInCorso) return;
+  S.salvataggioInCorso = true;
+  $("btnSalva").disabled = true;
   try {
-    await INV.db.salvaArticolo(r, S.fotoNuove);
+    const r = leggiScheda();
+    const errori = INV.erroriRecord(r);
+    if (!r.descrizione) errori.push("descrizione mancante");
+    if (errori.length) { mostraErroreScheda(errori.join(". ")); return; }
+    try {
+      await INV.db.salvaArticolo(r, S.fotoNuove);
+    } catch (e) {
+      mostraErroreScheda("Salvataggio fallito: " + (e && e.message || e)); return;
+    }
+    S.vano = r.posizione.vano; if (r.posizione.scaffale !== S.scaffale) await impostaScaffale(r.posizione.scaffale);
+    S.record = null; S.fotoNuove = [];
+    $("erroriScheda").classList.add("nascosto");
+    vai("scansione");
   } catch (e) {
-    $("erroriScheda").textContent = "Salvataggio fallito: " + e.message; $("erroriScheda").classList.remove("nascosto"); return;
+    S.ultimoErrore = "salvaScheda: " + (e && e.stack || e);
+    mostraErroreScheda("Errore imprevisto: " + (e && e.message || e) + ". Segnalalo a Pasquale con la riga in Esporta > Diagnostica.");
+  } finally {
+    S.salvataggioInCorso = false;
+    $("btnSalva").disabled = false;
   }
-  S.vano = r.posizione.vano; if (r.posizione.scaffale !== S.scaffale) await impostaScaffale(r.posizione.scaffale);
-  S.record = null; S.fotoNuove = [];
-  vai("scansione");
 }
 
 // ----- elenco -----
@@ -729,6 +749,19 @@ async function mostraElenco() {
 }
 
 // ----- esporta -----
+async function mostraDiagnostica() {
+  const righe = [];
+  righe.push("Browser: " + navigator.userAgent);
+  righe.push("Lettore codici: " + ("BarcodeDetector" in window ? "presente" : "ASSENTE"));
+  if ("BarcodeDetector" in window && BarcodeDetector.getSupportedFormats) {
+    try { righe.push("Formati: " + (await BarcodeDetector.getSupportedFormats()).join(", ")); } catch (e) { righe.push("Formati: errore " + e.message); }
+  }
+  righe.push("Letture tentate: " + (Scanner.tentativi || 0) + ", codici visti: " + (Scanner.visti || 0));
+  righe.push("Memoria persistente: " + (navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : "n/d"));
+  righe.push("Ultimo errore: " + (S.ultimoErrore || "nessuno"));
+  if ($("diagnostica")) $("diagnostica").innerHTML = righe.map(esc).join("<br>");
+}
+
 async function mostraEsporta() {
   $("versioneApp").textContent = "v" + INV.VERSIONE + (S.aggiornamento ? " (nuova versione pronta)" : "");
   const st = await INV.db.statistiche();
@@ -743,7 +776,10 @@ async function mostraEsporta() {
     <ul class="lista" id="listaExport">${storico.slice().reverse().map((e, i) => `<li><div><b>${esc(e.nome)}</b><small>${e.quando.replace("T", " ")} - ${e.n_articoli} articoli, ${e.n_foto} foto</small></div>
       <div>${e.confermata ? '<span style="color:var(--verde)">confermata</span>' : `<button class="secondario btnConferma" data-i="${storico.length - 1 - i}" style="padding:8px 10px">Ho salvato</button>`}</div></li>`).join("")}</ul>
     <label>Nome dispositivo</label><input id="fDispositivo" value="${esc(S.dispositivo)}"><button id="btnDispositivo" class="secondario" style="margin-top:8px">Salva nome</button>
-    <p style="color:#888;font-size:.85rem;margin-top:24px">Inventario CIMA v${INV.VERSIONE}. I dati restano su questo telefono finche' non li esporti.</p>`;
+    <p style="color:#888;font-size:.85rem;margin-top:24px">Inventario CIMA v${INV.VERSIONE}. I dati restano su questo telefono finche' non li esporti.</p>
+    <details style="margin-top:12px;color:#666;font-size:.8rem"><summary>Diagnostica</summary>
+      <p id="diagnostica" style="word-break:break-all"></p></details>`;
+  mostraDiagnostica();
   if (S.aggiornamento) {
     const b = document.createElement("button"); b.textContent = "Aggiorna app"; b.style.marginBottom = "12px";
     b.onclick = () => { S.aggiornamento.postMessage({ tipo: "aggiorna" }); };
@@ -824,7 +860,7 @@ const Fotocamera = {
 };
 
 const Scanner = {
-  detector: null, timer: null, ultimo: { valore: "", quando: 0 }, bloccoFino: 0,
+  detector: null, timer: null, ultimo: { valore: "", quando: 0 }, bloccoFino: 0, tentativi: 0, visti: 0,
   disponibile() { return "BarcodeDetector" in window; },
   async avvia(videoEl, onCodice) {
     if (!this.disponibile()) return;
@@ -833,8 +869,10 @@ const Scanner = {
     this.timer = setInterval(async () => {
       if (videoEl.readyState < 2 || Date.now() < this.bloccoFino) return;
       let codici = [];
-      try { codici = await this.detector.detect(videoEl); } catch (e) { return; }
+      this.tentativi++;
+      try { codici = await this.detector.detect(videoEl); } catch (e) { S.ultimoErrore = "detect: " + e.message; return; }
       if (!codici.length) return;
+      this.visti++;
       const c = codici[0];
       const ora = Date.now();
       if (this.ultimo.valore === c.rawValue && ora - this.ultimo.quando < 1000) {
