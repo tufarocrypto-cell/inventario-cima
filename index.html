@@ -132,7 +132,7 @@ dialog button { margin-top: 10px; width: 100%; }
 (function () {
   "use strict";
   const INV = {};
-  INV.VERSIONE = "0.1.3";
+  INV.VERSIONE = "0.1.4";
   INV.PREFISSO_QR_SCAFFALE = "SCAFFALE:";
   INV.TIPI_CODICE = ["EAN", "SKU", "interno", "manuale"];
   INV.TIPI = ["semplice", "kit", "componente"];
@@ -166,6 +166,15 @@ dialog button { margin-top: 10px; width: 100%; }
     // Altro codice a barre letto dal lettore (Code 128, Code 39, ITF, ...): SKU del negozio.
     // Senza formato il codice e' stato digitato a mano.
     return { tipo: "articolo", codice: v, tipo_codice: formato ? "SKU" : "manuale" };
+  };
+
+  // Avviso rosso: vero se esistono dati non ancora esportati e il piu' vecchio di essi
+  // ha piu' di 24 ore. Senza alcuna esportazione confermata conta dal primo articolo salvato.
+  INV.esportazioneDovuta = function (records, ultimoExport, adesso) {
+    const nonEsportati = records.filter(r => !ultimoExport || r.modificato > ultimoExport);
+    if (!nonEsportati.length) return false;
+    const primo = nonEsportati.map(r => r.modificato).sort()[0];
+    return adesso.getTime() - new Date(primo).getTime() > 24 * 3600 * 1000;
   };
 
   const pad = (n, l) => String(n).padStart(l, "0");
@@ -577,9 +586,7 @@ async function aggiornaBarra() {
   $("contaOggi").textContent = tutti.filter(r => r.creato.slice(0, 10) === oggi).length;
   S.descrizioni = tutti.map(r => r.descrizione).filter(Boolean);
   const ultimo = await INV.db.leggiImpostazione("ultimoExportConfermato", null);
-  const nuoviDopo = ultimo ? tutti.some(r => r.modificato > ultimo) : tutti.length > 0;
-  const scaduto = !ultimo || (Date.now() - new Date(ultimo).getTime()) > 24 * 3600 * 1000;
-  $("avvisoExport").classList.toggle("nascosto", !(nuoviDopo && scaduto));
+  $("avvisoExport").classList.toggle("nascosto", !INV.esportazioneDovuta(tutti, ultimo, new Date()));
 }
 
 async function impostaScaffale(codice) {
