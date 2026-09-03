@@ -132,9 +132,9 @@ dialog button { margin-top: 10px; width: 100%; }
 (function () {
   "use strict";
   const INV = {};
-  INV.VERSIONE = "0.1.1";
+  INV.VERSIONE = "0.1.2";
   INV.PREFISSO_QR_SCAFFALE = "SCAFFALE:";
-  INV.TIPI_CODICE = ["EAN", "interno", "manuale"];
+  INV.TIPI_CODICE = ["EAN", "SKU", "interno", "manuale"];
   INV.TIPI = ["semplice", "kit", "componente"];
   INV.STATI = ["nuovo", "confezione_danneggiata", "incompleto", "obsoleto"];
   INV.UNITA = ["pz", "conf", "m", "kg", "coppia"];
@@ -163,7 +163,9 @@ dialog button { margin-top: 10px; width: 100%; }
     if (FORMATI_EAN.has(formato)) {
       return INV.eanValido(v) ? { tipo: "articolo", codice: v, tipo_codice: "EAN" } : null;
     }
-    return { tipo: "articolo", codice: v, tipo_codice: "manuale" };
+    // Altro codice a barre letto dal lettore (Code 128, Code 39, ITF, ...): SKU del negozio.
+    // Senza formato il codice e' stato digitato a mano.
+    return { tipo: "articolo", codice: v, tipo_codice: formato ? "SKU" : "manuale" };
   };
 
   const pad = (n, l) => String(n).padStart(l, "0");
@@ -826,7 +828,7 @@ const Scanner = {
   disponibile() { return "BarcodeDetector" in window; },
   async avvia(videoEl, onCodice) {
     if (!this.disponibile()) return;
-    if (!this.detector) this.detector = new BarcodeDetector({ formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "qr_code"] });
+    if (!this.detector) this.detector = new BarcodeDetector({ formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "code_93", "itf", "codabar", "data_matrix", "qr_code"] });
     this.ferma();
     this.timer = setInterval(async () => {
       if (videoEl.readyState < 2 || Date.now() < this.bloccoFino) return;
