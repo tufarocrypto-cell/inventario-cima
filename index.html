@@ -127,6 +127,312 @@ dialog button { margin-top: 10px; width: 100%; }
 <dialog id="dlgTesto"><p id="dlgTestoDomanda"></p><input id="dlgTestoInput"><button id="dlgTestoOk">Ok</button><button id="dlgTestoAnnulla" class="secondario">Annulla</button></dialog>
 
 <script>
+/* logica.js - Inventario magazzino CIMA. Funzioni pure e livello IndexedDB.
+   Nessuna dipendenza. Espone il solo oggetto globale INV. */
+(function () {
+  "use strict";
+  const INV = {};
+  INV.VERSIONE = "0.1.1";
+  INV.PREFISSO_QR_SCAFFALE = "SCAFFALE:";
+  INV.TIPI_CODICE = ["EAN", "interno", "manuale"];
+  INV.TIPI = ["semplice", "kit", "componente"];
+  INV.STATI = ["nuovo", "confezione_danneggiata", "incompleto", "obsoleto"];
+  INV.UNITA = ["pz", "conf", "m", "kg", "coppia"];
+  const FORMATI_EAN = new Set(["ean_13", "ean_8", "upc_a", "upc_e"]);
+
+  // ----- dominio -----
+  INV.eanValido = function (codice) {
+    if (typeof codice !== "string" || !/^\d+$/.test(codice) || ![8, 12, 13].includes(codice.length)) return false;
+    const cifre = codice.split("").map(Number);
+    const controllo = cifre.pop();
+    let somma = 0;
+    cifre.reverse().forEach((c, i) => { somma += c * (i % 2 === 0 ? 3 : 1); });
+    return (10 - (somma % 10)) % 10 === controllo;
+  };
+
+  INV.classificaCodice = function (valore, formato) {
+    const v = (valore || "").trim();
+    if (!v) return null;
+    if (formato === "qr_code") {
+      if (v.startsWith(INV.PREFISSO_QR_SCAFFALE)) {
+        const s = v.slice(INV.PREFISSO_QR_SCAFFALE.length).trim();
+        return s ? { tipo: "scaffale", scaffale: s } : null;
+      }
+      return null;
+    }
+    if (FORMATI_EAN.has(formato)) {
+      return INV.eanValido(v) ? { tipo: "articolo", codice: v, tipo_codice: "EAN" } : null;
+    }
+    return { tipo: "articolo", codice: v, tipo_codice: "manuale" };
+  };
+
+  const pad = (n, l) => String(n).padStart(l, "0");
+  INV.nuovoCodiceInterno = n => "CIMA-" + pad(n, 5);
+  INV.isoLocale = d => `${d.getFullYear()}-${pad(d.getMonth() + 1, 2)}-${pad(d.getDate(), 2)}T${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}`;
+  INV.nuovoId = (dispositivo, d, progressivo) => `${dispositivo}_${d.getFullYear()}${pad(d.getMonth() + 1, 2)}${pad(d.getDate(), 2)}_${pad(progressivo, 4)}`;
+
+  INV.nuovoRecord = function (campi, ctx) {
+    const ora = INV.isoLocale(ctx.adesso);
+    return Object.assign({
+      id: INV.nuovoId(ctx.dispositivo, ctx.adesso, ctx.progressivo),
+      codice: "", tipo_codice: "manuale", tipo: "semplice", descrizione: "", marca: "", categoria: "altro",
+      quantita: 1, unita: "pz", prezzo_esposto: null, stato: "nuovo",
+      posizione: { scaffale: "", vano: "" }, componenti: [], appartiene_a: null, foto: [], note: "",
+      creato: ora, modificato: ora, dispositivo: ctx.dispositivo,
+    }, campi);
+  };
+
+  INV.erroriRecord = function (r) {
+    const e = [];
+    for (const campo of ["id", "codice", "tipo_codice", "tipo", "descrizione", "quantita", "unita", "stato",
+                         "posizione", "componenti", "foto", "creato", "modificato", "dispositivo"]) {
+      if (!(campo in r)) e.push("campo mancante: " + campo);
+    }
+    if (e.length) return e;
+    if (!INV.TIPI_CODICE.includes(r.tipo_codice)) e.push("tipo_codice sconosciuto: " + r.tipo_codice);
+    if (!INV.TIPI.includes(r.tipo)) e.push("tipo sconosciuto: " + r.tipo);
+    if (!INV.STATI.includes(r.stato)) e.push("stato sconosciuto: " + r.stato);
+    if (!INV.UNITA.includes(r.unita)) e.push("unita sconosciuta: " + r.unita);
+    if (typeof r.quantita !== "number" || !isFinite(r.quantita) || r.quantita < 0) e.push("quantita non valida (numero >= 0)");
+    if (r.prezzo_esposto !== null && r.prezzo_esposto !== undefined && typeof r.prezzo_esposto !== "number") e.push("prezzo_esposto non numerico");
+    if (!r.posizione || typeof r.posizione !== "object" || !r.posizione.scaffale) e.push("posizione.scaffale mancante");
+    if (r.tipo === "kit" && (!Array.isArray(r.componenti) || r.componenti.length === 0)) e.push("kit senza componenti");
+    if (r.tipo !== "kit" && Array.isArray(r.componenti) && r.componenti.length) e.push("componenti presenti su articolo non kit");
+    (r.componenti || []).forEach((c, i) => {
+      for (const campo of ["descrizione", "quantita_per_kit", "mancanti"]) if (!(campo in c)) e.push(`componente ${i}: campo mancante ${campo}`);
+    });
+    if (!Array.isArray(r.foto)) e.push("foto non e' una lista");
+    return e;
+  };
+
+  INV.statoEffettivo = r => (r.tipo === "kit" && (r.componenti || []).some(c => (c.mancanti || 0) > 0)) ? "incompleto" : r.stato;
+
+  INV.decidiGiacenza = function (esistenti, scaffale) {
+    if (!esistenti.length) return "nuovo";
+    return esistenti.some(r => r.posizione.scaffale === scaffale) ? "stessa_posizione" : "altra_posizione";
+  };
+
+  INV.suggerimenti = function (descrizioni, testo, max = 6) {
+    const parole = (testo || "").toLowerCase().split(/\s+/).filter(Boolean);
+    if (!parole.length) return [];
+    const uniche = [...new Set(descrizioni)];
+    return uniche.filter(d => { const l = d.toLowerCase(); return parole.every(p => l.includes(p)); })
+                 .sort((a, b) => a.length - b.length || a.localeCompare(b)).slice(0, max);
+  };
+
+  // ----- esportazione -----
+  INV.CAMPI_CSV = ["id", "codice", "tipo_codice", "tipo", "kit_padre", "descrizione", "marca", "categoria",
+                   "quantita", "unita", "prezzo_esposto", "stato", "scaffale", "vano", "n_foto", "note",
+                   "creato", "modificato", "dispositivo"];
+
+  INV.righeCsv = function (articoli) {
+    const righe = [];
+    for (const r of articoli) {
+      righe.push({
+        id: r.id, codice: r.codice, tipo_codice: r.tipo_codice, tipo: r.tipo, kit_padre: r.appartiene_a || "",
+        descrizione: r.descrizione, marca: r.marca || "", categoria: r.categoria || "", quantita: r.quantita,
+        unita: r.unita, prezzo_esposto: r.prezzo_esposto === null || r.prezzo_esposto === undefined ? "" : r.prezzo_esposto,
+        stato: r.stato, scaffale: r.posizione.scaffale, vano: r.posizione.vano || "", n_foto: r.foto.length,
+        note: r.note || "", creato: r.creato, modificato: r.modificato, dispositivo: r.dispositivo });
+      (r.componenti || []).forEach((c, i) => righe.push({
+        id: `${r.id}#${i + 1}`, codice: "", tipo_codice: "", tipo: "componente_kit", kit_padre: r.id,
+        descrizione: c.descrizione, marca: "", categoria: "", quantita: c.quantita_per_kit, unita: "pz",
+        prezzo_esposto: "", stato: "", scaffale: r.posizione.scaffale, vano: r.posizione.vano || "",
+        n_foto: (c.foto || []).length, note: `mancanti: ${c.mancanti || 0}`, creato: "", modificato: "", dispositivo: r.dispositivo }));
+    }
+    return righe;
+  };
+
+  function campoCsv(v) {
+    const s = v === null || v === undefined ? "" : String(v);
+    return /[;"\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+  INV.testoCsv = function (articoli) {
+    const linee = [INV.CAMPI_CSV.join(";")];
+    for (const riga of INV.righeCsv(articoli)) linee.push(INV.CAMPI_CSV.map(c => campoCsv(riga[c])).join(";"));
+    return "﻿" + linee.join("\r\n") + "\r\n";
+  };
+
+  const TABELLA_CRC = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
+    return t;
+  })();
+  INV.crc32 = function (bytes, inizio = 0xFFFFFFFF) {
+    let c = inizio;
+    for (let i = 0; i < bytes.length; i++) c = TABELLA_CRC[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  };
+
+  function dosDataOra(d) {
+    const data = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+    const ora = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+    return { data, ora };
+  }
+  function le(n, byte) { const b = new Uint8Array(byte); for (let i = 0; i < byte; i++) b[i] = (n >>> (8 * i)) & 0xFF; return b; }
+
+  INV.costruisciZip = async function (voci, data) {
+    const { data: dd, ora: dt } = dosDataOra(data || new Date());
+    const parti = [], centrale = [];
+    let offset = 0;
+    for (const v of voci) {
+      const nome = new TextEncoder().encode(v.nome);
+      const bytes = v.dati instanceof Blob ? new Uint8Array(await v.dati.arrayBuffer()) : v.dati;
+      const crc = INV.crc32(bytes);
+      const testa = new Uint8Array([...le(0x04034b50, 4), ...le(20, 2), ...le(0x0800, 2), ...le(0, 2), ...le(dt, 2), ...le(dd, 2),
+                                    ...le(crc, 4), ...le(bytes.length, 4), ...le(bytes.length, 4), ...le(nome.length, 2), ...le(0, 2)]);
+      parti.push(testa, nome, v.dati instanceof Blob ? v.dati : bytes);
+      centrale.push(new Uint8Array([...le(0x02014b50, 4), ...le(20, 2), ...le(20, 2), ...le(0x0800, 2), ...le(0, 2), ...le(dt, 2), ...le(dd, 2),
+                                    ...le(crc, 4), ...le(bytes.length, 4), ...le(bytes.length, 4), ...le(nome.length, 2), ...le(0, 2), ...le(0, 2),
+                                    ...le(0, 2), ...le(0, 2), ...le(0, 4), ...le(offset, 4)]), nome);
+      offset += testa.length + nome.length + bytes.length;
+    }
+    const dimCentrale = centrale.reduce((s, p) => s + p.length, 0);
+    const eocd = new Uint8Array([...le(0x06054b50, 4), ...le(0, 2), ...le(0, 2), ...le(voci.length, 2), ...le(voci.length, 2),
+                                 ...le(dimCentrale, 4), ...le(offset, 4), ...le(0, 2)]);
+    return new Blob([...parti, ...centrale, eocd], { type: "application/zip" });
+  };
+
+  INV.sha256Hex = async function (bytes) {
+    const h = await crypto.subtle.digest("SHA-256", bytes);
+    return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, "0")).join("");
+  };
+
+  INV.costruisciExport = async function (articoli, leggiFoto, meta) {
+    const d = meta.adesso || new Date();
+    const grezzo = new TextEncoder().encode(JSON.stringify(articoli, null, 1));
+    const voci = [], fotoMancanti = [];
+    let nFoto = 0;
+    for (const r of articoli) {
+      const nomi = [...r.foto, ...(r.componenti || []).flatMap(c => c.foto || [])];
+      for (const nome of nomi) {
+        const b = await leggiFoto(nome);
+        if (b) { voci.push({ nome: "foto/" + nome, dati: b }); nFoto++; } else fotoMancanti.push(nome);
+      }
+    }
+    const manifest = { data_export: INV.isoLocale(d), versione_app: INV.VERSIONE, dispositivo: meta.dispositivo,
+                       n_articoli: articoli.length, n_foto: nFoto, sha256_articoli: await INV.sha256Hex(grezzo) };
+    voci.unshift({ nome: "manifest.json", dati: new TextEncoder().encode(JSON.stringify(manifest, null, 1)) },
+                 { nome: "articoli.json", dati: grezzo },
+                 { nome: "articoli.csv", dati: new TextEncoder().encode(INV.testoCsv(articoli)) });
+    const nome = `inventario-CIMA-${d.getFullYear()}${pad(d.getMonth() + 1, 2)}${pad(d.getDate(), 2)}-${pad(d.getHours(), 2)}${pad(d.getMinutes(), 2)}.zip`;
+    return { blob: await INV.costruisciZip(voci, d), nome, manifest, fotoMancanti };
+  };
+
+  INV.ridimensionaFoto = async function (blob, maxLato = 1280, qualita = 0.8) {
+    const bmp = await createImageBitmap(blob, { imageOrientation: "from-image" });
+    const scala = Math.min(1, maxLato / Math.max(bmp.width, bmp.height));
+    const w = Math.round(bmp.width * scala), h = Math.round(bmp.height * scala);
+    const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+    cv.getContext("2d").drawImage(bmp, 0, 0, w, h);
+    bmp.close && bmp.close();
+    return new Promise((res, rej) => cv.toBlob(b => b ? res(b) : rej(new Error("toBlob fallito")), "image/jpeg", qualita));
+  };
+
+  // ----- persistenza -----
+  const db = { nome: "inventario", conn: null };
+  const req = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  const fineTx = tx => new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error || new Error("transazione annullata")); });
+
+  db.configura = function (opz) { if (opz.nome) { db.nome = opz.nome; if (db.conn) { db.conn.close(); db.conn = null; } } };
+  db.apri = function () {
+    if (db.conn) return Promise.resolve(db.conn);
+    return new Promise((res, rej) => {
+      const r = indexedDB.open(db.nome, 1);
+      r.onupgradeneeded = () => {
+        const d = r.result;
+        const a = d.createObjectStore("articoli", { keyPath: "id" });
+        a.createIndex("codice", "codice", { unique: false });
+        d.createObjectStore("foto", { keyPath: "nome" });
+        d.createObjectStore("impostazioni", { keyPath: "chiave" });
+      };
+      r.onsuccess = () => { db.conn = r.result; db.conn.onversionchange = () => { db.conn.close(); db.conn = null; }; res(db.conn); };
+      r.onerror = () => rej(r.error);
+    });
+  };
+  db.elimina = async function () {
+    if (db.conn) { db.conn.close(); db.conn = null; }
+    await new Promise((res, rej) => { const r = indexedDB.deleteDatabase(db.nome); r.onsuccess = res; r.onerror = () => rej(r.error); r.onblocked = res; });
+  };
+
+  db.salvaArticolo = async function (record, fotoNuove) {
+    const errori = INV.erroriRecord(record);
+    if (errori.length) throw new Error("Record non valido: " + errori.join("; "));
+    const d = await db.apri();
+    const tx = d.transaction(["articoli", "foto"], "readwrite");
+    const esistente = await req(tx.objectStore("articoli").get(record.id));
+    if (esistente) record.modificato = INV.isoLocale(new Date());
+    tx.objectStore("articoli").put(record);
+    for (const f of fotoNuove || []) tx.objectStore("foto").put({ nome: f.nome, blob: f.blob, dimensione: f.blob.size });
+    await fineTx(tx);
+  };
+  db.elenco = async function () {
+    const d = await db.apri();
+    const tutti = await req(d.transaction("articoli").objectStore("articoli").getAll());
+    return tutti.sort((a, b) => b.modificato.localeCompare(a.modificato));
+  };
+  db.perCodice = async function (codice) {
+    const d = await db.apri();
+    return req(d.transaction("articoli").objectStore("articoli").index("codice").getAll(codice));
+  };
+  db.leggi = async function (id) { const d = await db.apri(); return req(d.transaction("articoli").objectStore("articoli").get(id)); };
+  db.eliminaArticolo = async function (id) {
+    const d = await db.apri();
+    const tx = d.transaction(["articoli", "foto"], "readwrite");
+    const r = await req(tx.objectStore("articoli").get(id));
+    if (r) {
+      for (const n of [...r.foto, ...(r.componenti || []).flatMap(c => c.foto || [])]) tx.objectStore("foto").delete(n);
+      tx.objectStore("articoli").delete(id);
+    }
+    await fineTx(tx);
+  };
+  db.leggiFoto = async function (nome) {
+    const d = await db.apri();
+    const v = await req(d.transaction("foto").objectStore("foto").get(nome));
+    return v ? v.blob : null;
+  };
+  db.leggiImpostazione = async function (chiave, predefinito) {
+    const d = await db.apri();
+    const v = await req(d.transaction("impostazioni").objectStore("impostazioni").get(chiave));
+    return v === undefined ? predefinito : v.valore;
+  };
+  db.scriviImpostazione = async function (chiave, valore) {
+    const d = await db.apri();
+    const tx = d.transaction("impostazioni", "readwrite");
+    tx.objectStore("impostazioni").put({ chiave, valore });
+    await fineTx(tx);
+  };
+  async function contatore(chiave) {
+    const d = await db.apri();
+    const tx = d.transaction("impostazioni", "readwrite");
+    const s = tx.objectStore("impostazioni");
+    const v = await req(s.get(chiave));
+    const n = (v ? v.valore : 0) + 1;
+    s.put({ chiave, valore: n });
+    await fineTx(tx);
+    return n;
+  }
+  db.prossimoProgressivo = () => contatore("progressivo");
+  db.prossimoInterno = () => contatore("interno");
+  db.statistiche = async function () {
+    const d = await db.apri();
+    const tx = d.transaction(["articoli", "foto"]);
+    const articoli = await req(tx.objectStore("articoli").getAll());
+    const foto = await req(tx.objectStore("foto").getAll());
+    return { articoli: articoli.length, pezzi: articoli.reduce((s, r) => s + (r.quantita || 0), 0),
+             foto: foto.length, byteFoto: foto.reduce((s, f) => s + (f.dimensione || 0), 0) };
+  };
+  INV.db = db;
+
+  INV.stimaSpazio = async function () {
+    if (!navigator.storage || !navigator.storage.estimate) return { usati: 0, quota: 0, percentualeLibera: 100 };
+    const e = await navigator.storage.estimate();
+    const libera = e.quota ? Math.max(0, Math.min(100, 100 * (1 - e.usage / e.quota))) : 100;
+    return { usati: e.usage || 0, quota: e.quota || 0, percentualeLibera: libera };
+  };
+
+  window.INV = INV;
+})();
 
 </script>
 <script>
