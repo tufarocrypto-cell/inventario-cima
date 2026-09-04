@@ -46,6 +46,8 @@ ul.lista li small { color: #666; display: block; }
 .nascosto { display: none !important; }
 dialog { border: 0; border-radius: 12px; padding: 18px; max-width: 92vw; }
 dialog button { margin-top: 10px; width: 100%; }
+.chip { display:inline-flex; align-items:center; gap:4px; border:1px solid #ccc; border-radius:14px; padding:2px 8px; font-size:14px; }
+.chip button { padding:0 6px; min-height:0; font-size:13px; }
 </style>
 </head>
 <body>
@@ -57,7 +59,7 @@ dialog button { margin-top: 10px; width: 100%; }
   <div class="contenuto">
     <div id="areaVideo">
       <video id="video" autoplay muted playsinline></video>
-      <div class="riga" style="margin-top:8px"><button id="btnTorcia" class="secondario">Torcia</button><span id="statoScanner" style="flex:2;font-size:.9rem;color:#555;align-self:center"></span></div>
+      <div class="riga" style="margin-top:8px"><button id="btnTorcia" class="secondario">Torcia</button><button id="btnAnnullaCodice" class="secondario nascosto" type="button">Torna alla scheda</button><span id="statoScanner" style="flex:2;font-size:.9rem;color:#555;align-self:center"></span></div>
       <div id="permessoNegato" class="avviso rosso nascosto">Fotocamera non autorizzata. In Chrome: icona del lucchetto accanto all'indirizzo, Autorizzazioni, Fotocamera: Consenti, poi ricarica.</div>
     </div>
     <label>Codice a mano (o QR scaffale)</label>
@@ -71,6 +73,8 @@ dialog button { margin-top: 10px; width: 100%; }
   <div class="contenuto" id="formScheda">
     <label>Codice <span id="tipoCodiceEtichetta"></span></label>
     <div class="riga"><input id="fCodice" readonly><button id="btnGoogle" class="secondario" style="flex:0 0 auto" type="button">Cerca su Google</button></div>
+    <div id="listaCodici" class="riga" style="flex-wrap:wrap;gap:6px"></div>
+    <button id="btnAltroCodice" class="secondario" type="button">Leggi altro codice</button>
     <label>Quantita'</label>
     <div class="qta"><button class="secondario" data-delta="-1">-1</button><button class="secondario" data-delta="1">+1</button><input id="fQuantita" type="number" inputmode="decimal" min="0" step="any"><button class="secondario" data-delta="10">+10</button></div>
     <label>Unita'</label><select id="fUnita"></select>
@@ -133,9 +137,12 @@ dialog button { margin-top: 10px; width: 100%; }
 (function () {
   "use strict";
   const INV = {};
-  INV.VERSIONE = "0.1.6";
+  INV.VERSIONE = "0.1.7";
   INV.PREFISSO_QR_SCAFFALE = "SCAFFALE:";
-  INV.TIPI_CODICE = ["EAN", "SKU", "interno", "manuale"];
+  // Un QR piu' lungo di cosi' non e' un codice prodotto: e' un indirizzo internet inquadrato
+  // per sbaglio (cartelloni, promozioni, WiFi). Le etichette CIMA-00001 stanno larghe.
+  INV.MAX_LUNGHEZZA_QR = 40;
+  INV.TIPI_CODICE = ["EAN", "SKU", "QR", "interno", "manuale"];
   INV.TIPI = ["semplice", "kit", "componente"];
   INV.STATI = ["nuovo", "confezione_danneggiata", "incompleto", "obsoleto"];
   INV.UNITA = ["pz", "conf", "m", "kg", "coppia"];
@@ -159,7 +166,8 @@ dialog button { margin-top: 10px; width: 100%; }
         const s = v.slice(INV.PREFISSO_QR_SCAFFALE.length).trim();
         return s ? { tipo: "scaffale", scaffale: s } : null;
       }
-      return null;
+      // QR non di scaffale: etichetta applicata a mano su un prodotto senza barcode
+      return v.length <= INV.MAX_LUNGHEZZA_QR ? { tipo: "articolo", codice: v, tipo_codice: "QR" } : null;
     }
     if (FORMATI_EAN.has(formato)) {
       return INV.eanValido(v) ? { tipo: "articolo", codice: v, tipo_codice: "EAN" } : null;
@@ -167,6 +175,24 @@ dialog button { margin-top: 10px; width: 100%; }
     // Altro codice a barre letto dal lettore (Code 128, Code 39, ITF, ...): SKU del negozio.
     // Senza formato il codice e' stato digitato a mano.
     return { tipo: "articolo", codice: v, tipo_codice: formato ? "SKU" : "manuale" };
+  };
+
+  // Unica funzione che tiene coerenti codici, codici_valori e la copia codice/tipo_codice.
+  INV.normalizzaCodici = function (r) {
+    const grezzi = Array.isArray(r.codici) && r.codici.length ? r.codici : [{ valore: r.codice, tipo: r.tipo_codice }];
+    const lista = [], visti = new Set();
+    for (const c of grezzi) {
+      const valore = ((c && c.valore) || "").trim();
+      if (!valore || visti.has(valore)) continue;
+      visti.add(valore);
+      const tipo = c && c.tipo;
+      lista.push({ valore, tipo: INV.TIPI_CODICE.includes(tipo) ? tipo : "manuale" });
+    }
+    r.codici = lista;
+    r.codici_valori = lista.map(c => c.valore);
+    // con lista vuota si lascia il codice com'era: erroriRecord segnalera' il record
+    if (lista.length) { r.codice = lista[0].valore; r.tipo_codice = lista[0].tipo; }
+    return r;
   };
 
   // Avviso rosso: vero se esistono dati non ancora esportati e il piu' vecchio di essi
@@ -202,13 +228,13 @@ dialog button { margin-top: 10px; width: 100%; }
 
   INV.nuovoRecord = function (campi, ctx) {
     const ora = INV.isoLocale(ctx.adesso);
-    return Object.assign({
+    return INV.normalizzaCodici(Object.assign({
       id: INV.nuovoId(ctx.dispositivo, ctx.adesso, ctx.progressivo),
       codice: "", tipo_codice: "manuale", tipo: "semplice", descrizione: "", marca: "", categoria: "altro",
       quantita: 1, unita: "pz", prezzo_esposto: null, stato: "nuovo",
       posizione: { scaffale: "", vano: "" }, componenti: [], appartiene_a: null, foto: [], note: "",
       creato: ora, modificato: ora, dispositivo: ctx.dispositivo,
-    }, campi);
+    }, campi));
   };
 
   INV.erroriRecord = function (r) {
@@ -219,6 +245,15 @@ dialog button { margin-top: 10px; width: 100%; }
     }
     if (e.length) return e;
     if (!INV.TIPI_CODICE.includes(r.tipo_codice)) e.push("tipo_codice sconosciuto: " + r.tipo_codice);
+    if (!Array.isArray(r.codici) || !r.codici.length) e.push("codici mancante o vuoto");
+    else if (r.codici.some(c => !c || typeof c !== "object")) e.push("codici contiene un elemento che non e' un codice");
+    else {
+      const valori = r.codici.map(c => c.valore);
+      if (r.codici[0].valore !== r.codice || r.codici[0].tipo !== r.tipo_codice) e.push("codici[0] non allineato a codice/tipo_codice");
+      if (new Set(valori).size !== valori.length) e.push("codici duplicati");
+      if (!Array.isArray(r.codici_valori) || r.codici_valori.length !== valori.length || r.codici_valori.some((v, i) => v !== valori[i])) e.push("codici_valori non allineato a codici");
+      for (const c of r.codici) if (!INV.TIPI_CODICE.includes(c.tipo)) e.push("tipo codice sconosciuto: " + c.tipo);
+    }
     if (!INV.TIPI.includes(r.tipo)) e.push("tipo sconosciuto: " + r.tipo);
     if (!INV.STATI.includes(r.stato)) e.push("stato sconosciuto: " + r.stato);
     if (!INV.UNITA.includes(r.unita)) e.push("unita sconosciuta: " + r.unita);
@@ -250,9 +285,14 @@ dialog button { margin-top: 10px; width: 100%; }
   };
 
   // ----- esportazione -----
+  // Codici oltre il principale (che e' gia' in "codice"), per non perderli nel CSV.
+  INV.codiciExtra = function (r) {
+    return (r.codici || []).slice(1).map(c => `${c.tipo}:${c.valore}`).join("|");
+  };
+
   INV.CAMPI_CSV = ["id", "codice", "tipo_codice", "tipo", "kit_padre", "descrizione", "marca", "categoria",
                    "quantita", "unita", "prezzo_esposto", "stato", "scaffale", "vano", "n_foto", "note",
-                   "creato", "modificato", "dispositivo"];
+                   "creato", "modificato", "dispositivo", "codici_extra"];
 
   INV.righeCsv = function (articoli) {
     const righe = [];
@@ -262,12 +302,14 @@ dialog button { margin-top: 10px; width: 100%; }
         descrizione: r.descrizione, marca: r.marca || "", categoria: r.categoria || "", quantita: r.quantita,
         unita: r.unita, prezzo_esposto: r.prezzo_esposto === null || r.prezzo_esposto === undefined ? "" : r.prezzo_esposto,
         stato: r.stato, scaffale: r.posizione.scaffale, vano: r.posizione.vano || "", n_foto: r.foto.length,
-        note: r.note || "", creato: r.creato, modificato: r.modificato, dispositivo: r.dispositivo });
+        note: r.note || "", creato: r.creato, modificato: r.modificato, dispositivo: r.dispositivo,
+        codici_extra: INV.codiciExtra(r) });
       (r.componenti || []).forEach((c, i) => righe.push({
         id: `${r.id}#${i + 1}`, codice: "", tipo_codice: "", tipo: "componente_kit", kit_padre: r.id,
         descrizione: c.descrizione, marca: "", categoria: "", quantita: c.quantita_per_kit, unita: "pz",
         prezzo_esposto: "", stato: "", scaffale: r.posizione.scaffale, vano: r.posizione.vano || "",
-        n_foto: (c.foto || []).length, note: `mancanti: ${c.mancanti || 0}`, creato: "", modificato: "", dispositivo: r.dispositivo }));
+        n_foto: (c.foto || []).length, note: `mancanti: ${c.mancanti || 0}`, creato: "", modificato: "", dispositivo: r.dispositivo,
+        codici_extra: "" }));
     }
     return righe;
   };
@@ -367,13 +409,25 @@ dialog button { margin-top: 10px; width: 100%; }
   db.apri = function () {
     if (db.conn) return Promise.resolve(db.conn);
     return new Promise((res, rej) => {
-      const r = indexedDB.open(db.nome, 1);
-      r.onupgradeneeded = () => {
+      const r = indexedDB.open(db.nome, 2);
+      r.onupgradeneeded = ev => {
         const d = r.result;
-        const a = d.createObjectStore("articoli", { keyPath: "id" });
-        a.createIndex("codice", "codice", { unique: false });
-        d.createObjectStore("foto", { keyPath: "nome" });
-        d.createObjectStore("impostazioni", { keyPath: "chiave" });
+        if (ev.oldVersion < 1) {
+          d.createObjectStore("articoli", { keyPath: "id" }).createIndex("codice", "codice", { unique: false });
+          d.createObjectStore("foto", { keyPath: "nome" });
+          d.createObjectStore("impostazioni", { keyPath: "chiave" });
+        }
+        const a = r.transaction.objectStore("articoli");
+        if (!a.indexNames.contains("codici_valori")) a.createIndex("codici_valori", "codici_valori", { multiEntry: true });
+        if (ev.oldVersion >= 1 && ev.oldVersion < 2) {
+          // record scritti prima della lista codici: si ricostruiscono da codice/tipo_codice
+          a.openCursor().onsuccess = e => {
+            const cur = e.target.result;
+            if (!cur) return;
+            cur.update(INV.normalizzaCodici(cur.value));
+            cur.continue();
+          };
+        }
       };
       r.onsuccess = () => { db.conn = r.result; db.conn.onversionchange = () => { db.conn.close(); db.conn = null; }; res(db.conn); };
       r.onerror = () => rej(r.error);
@@ -385,6 +439,7 @@ dialog button { margin-top: 10px; width: 100%; }
   };
 
   db.salvaArticolo = async function (record, fotoNuove) {
+    INV.normalizzaCodici(record);
     const errori = INV.erroriRecord(record);
     if (errori.length) throw new Error("Record non valido: " + errori.join("; "));
     const d = await db.apri();
@@ -402,7 +457,7 @@ dialog button { margin-top: 10px; width: 100%; }
   };
   db.perCodice = async function (codice) {
     const d = await db.apri();
-    return req(d.transaction("articoli").objectStore("articoli").index("codice").getAll(codice));
+    return req(d.transaction("articoli").objectStore("articoli").index("codici_valori").getAll(codice));
   };
   db.leggi = async function (id) { const d = await db.apri(); return req(d.transaction("articoli").objectStore("articoli").get(id)); };
   db.eliminaArticolo = async function (id) {
@@ -641,7 +696,7 @@ async function apriDaCodice(info) {
   $("dlgAggiungi").onclick = async () => {
     dlg.close();
     const prog = await INV.db.prossimoProgressivo();
-    apriScheda(INV.nuovoRecord({ codice: base.codice, tipo_codice: base.tipo_codice, descrizione: base.descrizione, marca: base.marca, categoria: base.categoria,
+    apriScheda(INV.nuovoRecord({ codice: base.codice, tipo_codice: base.tipo_codice, codici: JSON.parse(JSON.stringify(base.codici || [])), descrizione: base.descrizione, marca: base.marca, categoria: base.categoria,
                                  unita: base.unita, prezzo_esposto: base.prezzo_esposto, tipo: base.tipo, componenti: JSON.parse(JSON.stringify(base.componenti)).map(c => ({ ...c, foto: [] })),
                                  posizione: { scaffale: S.scaffale, vano: S.vano } }, { dispositivo: S.dispositivo, adesso: new Date(), progressivo: prog }), true);
   };
@@ -649,11 +704,30 @@ async function apriDaCodice(info) {
   $("dlgAnnulla").onclick = () => dlg.close();
 }
 
+function disegnaCodici() {
+  const box = $("listaCodici");
+  box.innerHTML = "";
+  (S.record.codici || []).forEach((c, i) => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = `${c.tipo}: ${c.valore}`;
+    if (i > 0) {
+      const x = document.createElement("button");
+      x.type = "button"; x.className = "secondario"; x.textContent = "X";
+      x.onclick = () => { S.record.codici.splice(i, 1); INV.normalizzaCodici(S.record); disegnaCodici(); };
+      chip.appendChild(x);
+    }
+    box.appendChild(chip);
+  });
+}
+
 function apriScheda(record, nuovo = false) {
+  fineAggiungiCodice();
   S.record = JSON.parse(JSON.stringify(record)); S.fotoNuove = [];
   $("titoloScheda").textContent = nuovo ? "Nuovo articolo" : "Modifica articolo";
   $("btnElimina").classList.toggle("nascosto", nuovo);
   $("fCodice").value = record.codice; $("tipoCodiceEtichetta").textContent = `(${record.tipo_codice})`;
+  disegnaCodici();
   $("fQuantita").value = record.quantita;
   riempiSelect($("fUnita"), INV.UNITA.map(u => ({ v: u, t: u })), record.unita);
   $("fDescrizione").value = record.descrizione; $("suggerimenti").innerHTML = ""; $("aiuti").innerHTML = "";
@@ -961,6 +1035,27 @@ const Scanner = {
   ferma() { if (this.timer) { clearInterval(this.timer); this.timer = null; } },
 };
 
+// Aggiunge alla scheda aperta un codice letto o digitato in modalita' "leggi altro codice".
+async function aggiungiCodiceAllaScheda(info, formato) {
+  if (!info) { $("statoScanner").textContent = formato === "qr_code" ? "QR non valido: troppo lungo per essere un codice" : "Codice non valido, riprova"; return; }
+  if (info.tipo === "scaffale") { $("statoScanner").textContent = "Questo e' un codice scaffale: serve il codice dell'articolo"; return; }
+  if ((S.record.codici || []).some(c => c.valore === info.codice)) { $("statoScanner").textContent = "Codice gia' presente su questo articolo"; return; }
+  const altri = (await INV.db.perCodice(info.codice)).filter(r => r.id !== S.record.id);
+  if (altri.length) { $("statoScanner").textContent = `Codice gia' usato da "${altri[0].descrizione || altri[0].codice}"`; return; }
+  Scanner.ferma();
+  S.record.codici.push({ valore: info.codice, tipo: info.tipo_codice });
+  INV.normalizzaCodici(S.record);
+  fineAggiungiCodice();
+  vai("scheda");
+  disegnaCodici();
+}
+
+// La modalita' finisce solo qui: non deve spegnersi da sola quando si spegne lo schermo.
+function fineAggiungiCodice() {
+  S.aggiungiCodice = false;
+  $("btnAnnullaCodice").classList.add("nascosto");
+}
+
 let torciaAccesa = false;
 async function avviaScansione() {
   try {
@@ -968,14 +1063,17 @@ async function avviaScansione() {
     $("permessoNegato").classList.add("nascosto");
   } catch (e) {
     $("permessoNegato").classList.remove("nascosto");
+    $("btnAnnullaCodice").classList.toggle("nascosto", !S.aggiungiCodice);
     $("statoScanner").textContent = "";
     return;
   }
-  if (!Scanner.disponibile()) { $("statoScanner").textContent = "Lettore codici non disponibile su questo browser: usa il campo manuale."; return; }
-  $("statoScanner").textContent = "Inquadra un codice a barre o il QR dello scaffale";
+  if (!Scanner.disponibile()) { $("btnAnnullaCodice").classList.toggle("nascosto", !S.aggiungiCodice); $("statoScanner").textContent = "Lettore codici non disponibile su questo browser: usa il campo manuale."; return; }
+  $("btnAnnullaCodice").classList.toggle("nascosto", !S.aggiungiCodice);
+  $("statoScanner").textContent = S.aggiungiCodice ? "Inquadra il secondo codice dell'articolo" : "Inquadra un codice a barre o il QR dello scaffale";
   Scanner.avvia($("video"), async (valore, formato) => {
     const info = INV.classificaCodice(valore, formato);
-    if (!info) { $("statoScanner").textContent = formato === "qr_code" ? "QR non riconosciuto (serve SCAFFALE:...)" : "Codice non valido, riprova"; return; }
+    if (S.aggiungiCodice) { await aggiungiCodiceAllaScheda(info, formato); return; }
+    if (!info) { $("statoScanner").textContent = formato === "qr_code" ? "QR non valido: troppo lungo, oppure serve SCAFFALE:..." : "Codice non valido, riprova"; return; }
     if (info.tipo === "scaffale") { await impostaScaffale(info.scaffale); $("statoScanner").textContent = "Scaffale " + info.scaffale; return; }
     Scanner.ferma();
     apriDaCodice(info);
@@ -987,21 +1085,34 @@ document.addEventListener("visibilitychange", () => { if (document.hidden) ferma
 $("btnTorcia").onclick = async () => { torciaAccesa = !torciaAccesa; if (!(await Fotocamera.torcia(torciaAccesa))) { torciaAccesa = false; alert("Torcia non controllabile da questo browser."); } };
 
 // ----- eventi -----
-document.querySelectorAll("nav.tab button").forEach(b => b.onclick = () => { if (S.schermata === "scheda" && !confirm("Abbandonare la scheda senza salvare?")) return; vai(b.dataset.vai); });
+document.querySelectorAll("nav.tab button").forEach(b => b.onclick = () => {
+  // in modalita' "leggi altro codice" la schermata e' la scansione, ma la scheda aperta e' comunque a rischio
+  if ((S.schermata === "scheda" || S.aggiungiCodice) && !confirm("Abbandonare la scheda senza salvare?")) return;
+  fineAggiungiCodice(); S.record = null; S.fotoNuove = [];
+  vai(b.dataset.vai);
+});
 $("btnCodiceManuale").onclick = async () => {
   const v = $("codiceManuale").value.trim(); if (!v) return;
   $("codiceManuale").value = "";
-  if (v.toUpperCase().startsWith(INV.PREFISSO_QR_SCAFFALE)) return impostaScaffale(v.slice(INV.PREFISSO_QR_SCAFFALE.length).toUpperCase());
-  const info = INV.classificaCodice(v, /^\d{8}$|^\d{12,13}$/.test(v) ? "ean_13" : undefined); // digitato a mano: manuale
+  const scaffale = v.toUpperCase().startsWith(INV.PREFISSO_QR_SCAFFALE);
+  const info = scaffale ? { tipo: "scaffale" } : INV.classificaCodice(v, /^\d{8}$|^\d{12,13}$/.test(v) ? "ean_13" : undefined); // digitato a mano: manuale
+  // con una scheda aperta in attesa di un altro codice, il codice digitato va su quella scheda
+  if (S.aggiungiCodice) return aggiungiCodiceAllaScheda(info);
+  if (scaffale) return impostaScaffale(v.slice(INV.PREFISSO_QR_SCAFFALE.length).toUpperCase());
   if (!info) { alert("Codice EAN con cifra di controllo errata: ricontrolla o registra come 'senza codice'."); return; }
   apriDaCodice(info);
 };
 $("codiceManuale").onkeydown = e => { if (e.key === "Enter") $("btnCodiceManuale").click(); };
-$("btnSenzaCodice").onclick = async () => { const n = await INV.db.prossimoInterno(); apriDaCodice({ codice: INV.nuovoCodiceInterno(n), tipo_codice: "interno" }); };
+$("btnSenzaCodice").onclick = async () => {
+  if (S.aggiungiCodice) { $("statoScanner").textContent = "Stai aggiungendo un codice a un articolo aperto: leggilo o digitalo, oppure torna alla scheda"; return; }
+  const n = await INV.db.prossimoInterno(); apriDaCodice({ codice: INV.nuovoCodiceInterno(n), tipo_codice: "interno" });
+};
 $("btnCambiaScaffale").onclick = async () => { const s = await chiediTesto("Codice scaffale:", S.scaffale); if (s) impostaScaffale(s.toUpperCase()); };
-$("btnChiudiScheda").onclick = () => { if (confirm("Abbandonare la scheda senza salvare?")) { S.record = null; S.fotoNuove = []; vai("scansione"); } };
+$("btnChiudiScheda").onclick = () => { if (confirm("Abbandonare la scheda senza salvare?")) { fineAggiungiCodice(); S.record = null; S.fotoNuove = []; vai("scansione"); } };
 $("btnSalva").onclick = salvaScheda;
 $("btnGoogle").onclick = () => { const c = $("fCodice").value.trim(); if (c) window.open("https://www.google.com/search?q=" + encodeURIComponent(c), "_blank"); };
+$("btnAltroCodice").onclick = () => { S.aggiungiCodice = true; $("btnAnnullaCodice").classList.remove("nascosto"); vai("scansione"); };
+$("btnAnnullaCodice").onclick = () => { fineAggiungiCodice(); vai("scheda"); };
 $("btnElimina").onclick = async () => { if (confirm("Eliminare definitivamente questo articolo e le sue foto?")) { await INV.db.eliminaArticolo(S.record.id); S.record = null; vai("elenco"); } };
 document.querySelectorAll(".qta button").forEach(b => b.onclick = () => { $("fQuantita").value = Math.max(0, (Number($("fQuantita").value) || 0) + Number(b.dataset.delta)); });
 $("fDescrizione").oninput = () => {
