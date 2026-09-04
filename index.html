@@ -149,7 +149,7 @@ details#altriCampi summary { cursor: pointer; font-weight: bold; padding: 6px 0;
 (function () {
   "use strict";
   const INV = {};
-  INV.VERSIONE = "0.1.8";
+  INV.VERSIONE = "0.1.9";
   INV.PREFISSO_QR_SCAFFALE = "SCAFFALE:";
   // Un QR piu' lungo di cosi' non e' un codice prodotto: e' un indirizzo internet inquadrato
   // per sbaglio (cartelloni, promozioni, WiFi). Le etichette CIMA-00001 stanno larghe.
@@ -221,13 +221,22 @@ details#altriCampi summary { cursor: pointer; font-weight: bold; padding: 6px 0;
   // Testo da cercare sul web per identificare un articolo. L'EAN degli articoli di ferramenta
   // non e' quasi mai indicizzato, mentre il codice del produttore vive nei cataloghi dei
   // rivenditori: se l'articolo ha uno SKU si cerca quello, con la marca davanti quando c'e'.
-  INV.ricercaWeb = function (r) {
+  INV.ricercaWeb = function (r, produttori) {
     const codici = r.codici && r.codici.length ? r.codici : [{ valore: r.codice, tipo: r.tipo_codice }];
     const utili = codici.filter(c => c.valore && c.tipo !== "interno");
     if (!utili.length) return null;
     const scelto = utili.find(c => c.tipo === "SKU") || utili[0];
-    const marca = (r.marca || "").trim();
-    return (marca ? marca + " " : "") + scelto.valore;
+    // la marca aiuta molto: senza, un codice sconosciuto da' zero risultati invece dei prodotti affini
+    const ean = codici.find(c => c.tipo === "EAN");
+    const marca = (r.marca || "").trim() || (ean ? INV.marcaDaPrefisso(ean.valore, "EAN", produttori) : null) || "";
+    const testa = marca ? marca + " " : "";
+    // i codici lunghi dei produttori finiscono spesso con un suffisso di confezione che nessun
+    // rivenditore pubblica: si cerca anche la forma senza, lasciando decidere al motore
+    if (scelto.tipo === "SKU" && /^[A-Za-z0-9]{12,}$/.test(scelto.valore)) {
+      const base = scelto.valore.slice(0, -3);
+      return `${testa}(${scelto.valore} OR ${base})`;
+    }
+    return testa + scelto.valore;
   };
 
   // Quantita' dopo un tocco della barra rapida: mai sotto zero.
@@ -832,7 +841,7 @@ function disegnaCodici() {
     }
     box.appendChild(chip);
   });
-  $("btnGoogle").disabled = !INV.ricercaWeb(S.record);
+  $("btnGoogle").disabled = !INV.ricercaWeb(S.record, PRODUTTORI);
 }
 
 function apriScheda(record, nuovo = false) {
@@ -1227,7 +1236,7 @@ $("btnSenzaCodice").onclick = async () => {
 $("btnCambiaScaffale").onclick = async () => { const s = await chiediTesto("Codice scaffale:", S.scaffale); if (s) impostaScaffale(s.toUpperCase()); };
 $("btnChiudiScheda").onclick = () => { if (confirm("Abbandonare la scheda senza salvare?")) { fineAggiungiCodice(); S.record = null; S.fotoNuove = []; vai("scansione"); } };
 $("btnSalva").onclick = salvaScheda;
-$("btnGoogle").onclick = () => { const q = INV.ricercaWeb({ ...S.record, marca: $("fMarca").value.trim() }); if (q) window.open("https://www.google.com/search?q=" + encodeURIComponent(q), "_blank"); };
+$("btnGoogle").onclick = () => { const q = INV.ricercaWeb({ ...S.record, marca: $("fMarca").value.trim() }, PRODUTTORI); if (q) window.open("https://www.google.com/search?q=" + encodeURIComponent(q), "_blank"); };
 $("altriCampi").addEventListener("toggle", () => { if ($("altriCampi").open) S.altriCampiAperti = true; });
 ["fMarca", "fCategoria", "fPrezzo"].forEach(id => { $(id).addEventListener("input", disegnaRiepilogo); $(id).addEventListener("change", disegnaRiepilogo); });
 $("rapidaPiu1").onclick = () => contaRapida(1);
