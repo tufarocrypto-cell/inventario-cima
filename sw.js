@@ -1,4 +1,4 @@
-const VERSIONE = "0.1.9";
+const VERSIONE = "0.1.10";
 const CACHE = "inventario-" + VERSIONE;
 const FILE = ["./", "./index.html", "./manifest.webmanifest", "./icona.svg"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILE))); });

@@ -68,7 +68,8 @@ details#altriCampi summary { cursor: pointer; font-weight: bold; padding: 6px 0;
     </div>
     <label>Codice a mano (o QR scaffale)</label>
     <div class="riga"><input id="codiceManuale" inputmode="text" autocomplete="off" placeholder="es. 4006381333931 oppure SCAFFALE:B3"><button id="btnCodiceManuale" style="flex:0 0 auto">Vai</button></div>
-    <div class="riga" style="margin-top:12px"><button id="btnSenzaCodice" class="secondario">Articolo senza codice</button><button id="btnCambiaScaffale" class="secondario">Cambia scaffale</button></div>
+    <button id="btnSenzaCodice" style="margin-top:12px;width:100%">Articolo senza codice (foto)</button>
+    <div class="riga" style="margin-top:8px"><button id="btnCambiaScaffale" class="secondario">Cambia scaffale</button></div>
     <div id="barraRapida" class="rapida nascosto">
       <div class="riga" style="align-items:center"><b id="rapidaTesto" style="flex:1"></b><button id="rapidaChiudi" class="secondario" style="flex:0 0 auto">X</button></div>
       <div class="riga"><button id="rapidaMeno" class="secondario">-1</button><button id="rapidaPiu1">+1</button><button id="rapidaPiu5">+5</button><button id="rapidaScheda" class="secondario">Apri scheda</button></div>
@@ -102,7 +103,7 @@ details#altriCampi summary { cursor: pointer; font-weight: bold; padding: 6px 0;
       <div class="riga"><select id="fCategoria"></select><button id="btnNuovaCategoria" class="secondario" style="flex:0 0 auto">+</button></div>
       <label>Prezzo esposto (EUR)</label><input id="fPrezzo" type="number" inputmode="decimal" min="0" step="0.01" placeholder="vuoto se non c'e' l'etichetta">
       <label>Stato</label><select id="fStato"></select>
-      <label>Tipo</label><select id="fTipo"><option value="semplice">Articolo semplice</option><option value="kit">Kit / articolo composto</option><option value="componente">Componente sciolto</option></select>
+      <label>Tipo</label><select id="fTipo"><option value="semplice">Articolo semplice</option><option value="kit">Kit / articolo composto</option><option value="componente">Componente sciolto</option><option value="lotto">Lotto / merce sfusa (quantita' stimata)</option></select>
       <div id="blocComponenti" class="nascosto"><label>Componenti del kit</label><div id="componenti"></div><button id="btnAggiungiComponente" class="secondario" style="margin-top:8px">Aggiungi componente</button></div>
       <div id="blocAppartiene" class="nascosto"><label>Appartiene al kit</label><select id="fAppartiene"><option value="">(non so)</option></select></div>
       <label>Posizione</label>
@@ -149,13 +150,13 @@ details#altriCampi summary { cursor: pointer; font-weight: bold; padding: 6px 0;
 (function () {
   "use strict";
   const INV = {};
-  INV.VERSIONE = "0.1.9";
+  INV.VERSIONE = "0.1.10";
   INV.PREFISSO_QR_SCAFFALE = "SCAFFALE:";
   // Un QR piu' lungo di cosi' non e' un codice prodotto: e' un indirizzo internet inquadrato
   // per sbaglio (cartelloni, promozioni, WiFi). Le etichette CIMA-00001 stanno larghe.
   INV.MAX_LUNGHEZZA_QR = 40;
   INV.TIPI_CODICE = ["EAN", "SKU", "QR", "interno", "manuale"];
-  INV.TIPI = ["semplice", "kit", "componente"];
+  INV.TIPI = ["semplice", "kit", "componente", "lotto"];
   INV.STATI = ["nuovo", "confezione_danneggiata", "incompleto", "obsoleto"];
   INV.UNITA = ["pz", "conf", "m", "kg", "coppia"];
   const FORMATI_EAN = new Set(["ean_13", "ean_8", "upc_a", "upc_e"]);
@@ -237,6 +238,15 @@ details#altriCampi summary { cursor: pointer; font-weight: bold; padding: 6px 0;
       return `${testa}(${scelto.valore} OR ${base})`;
     }
     return testa + scelto.valore;
+  };
+
+  // Un articolo si puo' salvare senza descrizione, ma non senza nulla: la foto e' l'unica cosa
+  // che identifica un pezzo sfuso, e le parole si mettono dopo, a tavolino.
+  INV.erroriSalvataggio = function (r, nFotoNuove) {
+    const e = INV.erroriRecord(r);
+    const foto = (r.foto ? r.foto.length : 0) + (nFotoNuove || 0);
+    if (!(r.descrizione || "").trim() && foto === 0) e.push("serve almeno una foto o una descrizione");
+    return e;
   };
 
   // Quantita' dopo un tocco della barra rapida: mai sotto zero.
@@ -985,8 +995,7 @@ async function salvaScheda() {
   $("btnSalva").disabled = true;
   try {
     const r = leggiScheda();
-    const errori = INV.erroriRecord(r);
-    if (!r.descrizione) errori.push("descrizione mancante");
+    const errori = INV.erroriSalvataggio(r, S.fotoNuove.length);
     if (errori.length) { mostraErroreScheda(errori.join(". ")); return; }
     try {
       await INV.db.salvaArticolo(r, S.fotoNuove);
@@ -1039,8 +1048,10 @@ async function mostraEsporta() {
   const st = await INV.db.statistiche();
   const sp = await INV.stimaSpazio();
   const storico = await INV.db.leggiImpostazione("esportazioni", []);
+  const daDescrivere = (await INV.db.elenco()).filter(r => !(r.descrizione || "").trim()).length;
   $("esportaContenuto").innerHTML = `
     <p>Articoli: <b>${st.articoli}</b> - Pezzi: <b>${st.pezzi}</b> - Foto: <b>${st.foto}</b> (${(st.byteFoto / 1048576).toFixed(1)} MB)</p>
+    ${daDescrivere ? `<p style="color:#a60"><b>Da descrivere: ${daDescrivere}</b> - articoli salvati con la sola foto, si ritrovano in Elenco con il filtro "senza descrizione"</p>` : ""}
     <p style="color:#555">Spazio libero stimato: ${sp.percentualeLibera.toFixed(0)} %${sp.quota ? ` (${(sp.usati / 1048576).toFixed(0)} MB usati su ${(sp.quota / 1048576).toFixed(0)})` : ""}</p>
     <button id="btnEsporta" ${st.articoli ? "" : "disabled"}>Esporta ZIP</button>
     <div id="esitoExport"></div>
@@ -1231,7 +1242,10 @@ $("btnCodiceManuale").onclick = async () => {
 $("codiceManuale").onkeydown = e => { if (e.key === "Enter") $("btnCodiceManuale").click(); };
 $("btnSenzaCodice").onclick = async () => {
   if (S.aggiungiCodice) { $("statoScanner").textContent = "Stai aggiungendo un codice a un articolo aperto: leggilo o digitalo, oppure torna alla scheda"; return; }
-  const n = await INV.db.prossimoInterno(); apriDaCodice({ codice: INV.nuovoCodiceInterno(n), tipo_codice: "interno" });
+  const n = await INV.db.prossimoInterno();
+  await apriDaCodice({ codice: INV.nuovoCodiceInterno(n), tipo_codice: "interno" });
+  // su un pezzo sfuso la foto e' l'unica cosa che lo identifica: si parte da li'
+  if (S.schermata === "scheda") $("btnScatta").click();
 };
 $("btnCambiaScaffale").onclick = async () => { const s = await chiediTesto("Codice scaffale:", S.scaffale); if (s) impostaScaffale(s.toUpperCase()); };
 $("btnChiudiScheda").onclick = () => { if (confirm("Abbandonare la scheda senza salvare?")) { fineAggiungiCodice(); S.record = null; S.fotoNuove = []; vai("scansione"); } };
